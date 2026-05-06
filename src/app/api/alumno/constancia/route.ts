@@ -33,43 +33,50 @@ export async function GET() {
     // ── Calificaciones ────────────────────────────────────────────────────────
     const { data: califs } = await supabase
       .from('calificaciones')
-      .select('materia_id, aprobada')
+      .select('materia_id, acreditado, fecha_acreditacion, folio')
       .eq('alumno_id', user.id)
+      .eq('acreditado', true)
 
-    const califMap = new Map<string, boolean>()
+    const califMap = new Map<string, { acreditado: boolean; fecha_acreditacion: string | null; folio: string | null }>()
     for (const c of (califs ?? [])) {
-      const row = c as { materia_id: string; aprobada: boolean }
-      califMap.set(row.materia_id, row.aprobada)
+      const row = c as { materia_id: string; acreditado: boolean; fecha_acreditacion: string | null; folio: string | null }
+      califMap.set(row.materia_id, row)
     }
 
     // ── Materias de meses desbloqueados via meses_contenido ───────────────────
     // meses_contenido.materia_id → materias.id (many-to-one → materias es objeto único)
     const { data: meses } = await supabase
       .from('meses_contenido')
-      .select('numero_mes, materias(id, nombre)')
+      .select('numero_mes, materias(id, nombre, nivel)')
       .order('numero_mes')
       .lte('numero_mes', alumno.meses_desbloqueados ?? 0)
 
     type MesRow = {
       numero_mes: number
-      materias: { id: string; nombre: string } | null
+      materias: { id: string; nombre: string; nivel: string | null } | null
     }
 
     const materias_cursadas: {
-      codigo: string; nombre: string; mes_numero: number
-      estado: 'Acreditada' | 'No acreditada' | 'Pendiente'
+      materia_id: string; codigo: string; nombre_materia: string; mes_numero: number
+      nivel: string | null
+      estado: 'Acreditada' | 'Pendiente'
+      fecha_acreditacion: string | null
+      folio: string | null
     }[] = []
 
     for (const mes of ((meses ?? []) as unknown as MesRow[])) {
       const mat = mes.materias
       if (!mat) continue
+      const calif = califMap.get(mat.id)
       materias_cursadas.push({
-        codigo:     '',
-        nombre:     mat.nombre,
-        mes_numero: mes.numero_mes,
-        estado:     califMap.has(mat.id)
-          ? (califMap.get(mat.id) ? 'Acreditada' : 'No acreditada')
-          : 'Pendiente',
+        materia_id:         mat.id,
+        codigo:             '',
+        nombre_materia:     mat.nombre,
+        mes_numero:         mes.numero_mes,
+        nivel:              mat.nivel ?? null,
+        estado:             calif?.acreditado ? 'Acreditada' : 'Pendiente',
+        fecha_acreditacion: calif?.fecha_acreditacion ?? null,
+        folio:              calif?.folio ?? null,
       })
     }
 
