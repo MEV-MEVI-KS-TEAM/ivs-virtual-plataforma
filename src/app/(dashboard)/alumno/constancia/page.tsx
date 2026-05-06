@@ -2,15 +2,19 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Loader2, Printer, Download } from 'lucide-react'
+import jsPDF from 'jspdf'
+import html2canvas from 'html2canvas'
 
-type Estado = 'Acreditada' | 'No acreditada' | 'Pendiente'
+type Estado = 'Acreditada' | 'Pendiente'
 
 interface MateriaCursada {
   materia_id: string
-  codigo: string
   nombre_materia: string
+  nivel: string | null
   mes_numero: number
   estado: Estado
+  fecha_acreditacion: string | null
+  folio: string | null
 }
 
 interface DatosConstancia {
@@ -32,22 +36,32 @@ function generarFolio() {
   return `CONST-${year}-${rand}`
 }
 
+function formatFecha(iso: string | null): string {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleDateString('es-MX', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+    })
+  } catch {
+    return '—'
+  }
+}
+
 const BADGE: Record<Estado, React.CSSProperties> = {
-  Acreditada:      { background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' },
-  'No acreditada': { background: '#fee2e2', color: '#b91c1c', border: '1px solid #fca5a5' },
-  Pendiente:       { background: '#fef9ec', color: '#b45309', border: '1px solid #fde68a' },
+  Acreditada: { background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' },
+  Pendiente:  { background: '#fef9ec', color: '#b45309', border: '1px solid #fde68a' },
 }
 
 const estadoLabel: Record<Estado, string> = {
-  Acreditada:      'Acreditada',
-  'No acreditada': 'No acreditada',
-  Pendiente:       'Pendiente',
+  Acreditada: 'Acreditada',
+  Pendiente:  'Pendiente',
 }
 
 export default function ConstanciaPage() {
   const [datos, setDatos] = useState<DatosConstancia | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [generandoPDF, setGenerandoPDF] = useState(false)
   const folioRef = useRef<string>('')
 
   useEffect(() => {
@@ -69,6 +83,41 @@ export default function ConstanciaPage() {
   const porcentaje = datos
     ? Math.round((datos.meses_desbloqueados / datos.duracion_meses) * 100)
     : 0
+
+  const handleDescargarPDF = async () => {
+    const elemento = document.getElementById('constancia-print')
+    if (!elemento || !datos) return
+
+    setGenerandoPDF(true)
+    try {
+      const canvas = await html2canvas(elemento, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+      })
+
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      })
+
+      const imgWidth = 210
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+
+      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
+
+      const nombreArchivo = `constancia-${datos.matricula || 'alumno'}.pdf`
+      pdf.save(nombreArchivo)
+    } catch (err) {
+      console.error('Error generando PDF:', err)
+      alert('Error al generar PDF. Intenta usar Imprimir.')
+    } finally {
+      setGenerandoPDF(false)
+    }
+  }
 
   const disclaimerParts = `Este documento es un comprobante académico interno con folio {folio} generado digitalmente por IVS Virtual. Para verificar su autenticidad, contacte a administración.`.split('{folio}')
 
@@ -106,16 +155,20 @@ export default function ConstanciaPage() {
             Imprimir
           </button>
           <button
-            onClick={() => window.print()}
+            onClick={handleDescargarPDF}
+            disabled={generandoPDF}
             style={{
               padding: '10px 22px', borderRadius: 6, fontSize: 13, fontWeight: 600,
-              cursor: 'pointer', fontFamily: '"DM Sans", sans-serif',
+              cursor: generandoPDF ? 'wait' : 'pointer', fontFamily: '"DM Sans", sans-serif',
               display: 'flex', alignItems: 'center', gap: 7,
               background: '#2B7A77', color: '#fff', border: 'none',
+              opacity: generandoPDF ? 0.7 : 1,
             }}
           >
-            <Download className="w-4 h-4" />
-            Descargar PDF
+            {generandoPDF
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <Download className="w-4 h-4" />}
+            {generandoPDF ? 'Generando...' : 'Descargar PDF'}
           </button>
         </div>
 
@@ -284,7 +337,7 @@ export default function ConstanciaPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f8fafd' }}>
-                  {['Mes', 'Código', 'Materia', 'Estado'].map(h => (
+                  {['Mes', 'Materia', 'Estado', 'Fecha', 'Folio'].map(h => (
                     <th key={h} style={{
                       textAlign: 'left', padding: '9px 14px',
                       fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
@@ -295,14 +348,12 @@ export default function ConstanciaPage() {
               </thead>
               <tbody>
                 {datos.materias_cursadas
+                  .slice()
                   .sort((a, b) => a.mes_numero - b.mes_numero)
                   .map(m => (
                     <tr key={m.materia_id}>
                       <td style={{ padding: '12px 14px', color: '#64748b', fontSize: 12, borderBottom: '1px solid #f4f6fb' }}>
                         Mes {m.mes_numero}
-                      </td>
-                      <td style={{ padding: '12px 14px', fontSize: 12, color: '#3AAFA9', fontWeight: 700, letterSpacing: '0.06em', borderBottom: '1px solid #f4f6fb' }}>
-                        {m.codigo}
                       </td>
                       <td style={{ padding: '12px 14px', color: '#334155', borderBottom: '1px solid #f4f6fb' }}>
                         {m.nombre_materia}
@@ -317,6 +368,12 @@ export default function ConstanciaPage() {
                           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
                           {estadoLabel[m.estado]}
                         </span>
+                      </td>
+                      <td style={{ padding: '12px 14px', color: '#64748b', fontSize: 12, borderBottom: '1px solid #f4f6fb' }}>
+                        {formatFecha(m.fecha_acreditacion)}
+                      </td>
+                      <td style={{ padding: '12px 14px', color: '#3AAFA9', fontWeight: 600, fontSize: 11, letterSpacing: '0.04em', borderBottom: '1px solid #f4f6fb' }}>
+                        {m.folio ?? '—'}
                       </td>
                     </tr>
                   ))}
@@ -369,15 +426,18 @@ export default function ConstanciaPage() {
         </div>
       </div>
 
-      {/* Estilos de impresión */}
+      {/* Estilos de impresión — patrón visibility (más confiable en Next.js que body > *) */}
       <style>{`
         @media print {
-          body > *:not(#constancia-print) { display: none !important; }
+          body * { visibility: hidden; }
+          #constancia-print, #constancia-print * { visibility: visible; }
           #constancia-print {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
             box-shadow: none !important;
             border-radius: 0 !important;
-            width: 100% !important;
-            max-width: 100% !important;
           }
         }
       `}</style>
