@@ -104,10 +104,24 @@ export default function ConstanciaPage() {
         format: 'a4',
       })
 
-      const imgWidth = 210
+      const imgWidth = 210   // A4 ancho mm
+      const pageHeight = 297 // A4 alto mm
       const imgHeight = (canvas.height * imgWidth) / canvas.width
 
-      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
+      let heightLeft = imgHeight
+      let position = 0
+
+      // Primera página
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
+      heightLeft -= pageHeight
+
+      // Páginas adicionales si el contenido excede A4
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight // negativo: desplaza la imagen hacia arriba
+        pdf.addPage()
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
+        heightLeft -= pageHeight
+      }
 
       const nombreArchivo = `constancia-${datos.matricula || 'alumno'}.pdf`
       pdf.save(nombreArchivo)
