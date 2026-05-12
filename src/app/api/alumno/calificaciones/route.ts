@@ -7,14 +7,15 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
-    // ── Resolver alumno_id y duracion (IVS: preferir alumnos.id = user.id) ─────
-    let alumnoId:        string | null = null
-    let mesesDesbloqueados             = 0
-    let duracionMeses                  = 0
+    // ── Resolver alumno_id, nivel e inscripcion (IVS: preferir alumnos.id = user.id) ─────
+    let alumnoId:          string | null = null
+    let mesesDesbloqueados               = 0
+    let alumnoNivel:       string | null = null
+    let inscripcionPagada                = false
 
     const { data: aNuevo } = await supabase
       .from('alumnos')
-      .select('id, meses_desbloqueados, modalidad')
+      .select('id, meses_desbloqueados, nivel, inscripcion_pagada')
       .eq('id', user.id)
       .maybeSingle()
 
@@ -22,17 +23,19 @@ export async function GET() {
       const row = aNuevo as unknown as {
         id: string
         meses_desbloqueados: number
-        modalidad?: string
+        nivel?: string
+        inscripcion_pagada?: boolean
       }
       alumnoId           = row.id
       mesesDesbloqueados = row.meses_desbloqueados ?? 0
-      duracionMeses      = row.modalidad === '3_meses' ? 3 : 6
+      alumnoNivel        = row.nivel ?? null
+      inscripcionPagada  = row.inscripcion_pagada ?? false
     }
 
     if (!alumnoId) {
       const { data: a1 } = await supabase
         .from('alumnos')
-        .select('id, meses_desbloqueados, planes_estudio(duracion_meses)')
+        .select('id, meses_desbloqueados, nivel, inscripcion_pagada')
         .eq('usuario_id', user.id)
         .maybeSingle()
 
@@ -40,11 +43,13 @@ export async function GET() {
         const row = a1 as unknown as {
           id: string
           meses_desbloqueados: number
-          planes_estudio: { duracion_meses: number } | null
+          nivel?: string
+          inscripcion_pagada?: boolean
         }
         alumnoId           = row.id
         mesesDesbloqueados = row.meses_desbloqueados ?? 0
-        duracionMeses      = row.planes_estudio?.duracion_meses ?? 6
+        alumnoNivel        = row.nivel ?? null
+        inscripcionPagada  = row.inscripcion_pagada ?? false
       }
     }
 
@@ -74,16 +79,16 @@ export async function GET() {
     }
 
     // ── Materias del plan via meses_contenido ─────────────────────────────────
-    // meses_contenido.materia_id → materias.id (many-to-one → materias es objeto único)
+    // Sub-fix C: sin .lte — incluir todos los meses para no perder materias acreditadas
+    // Sub-fix A/B: filtrar por nivel del alumno en el loop
     const { data: meses } = await supabase
       .from('meses_contenido')
-      .select('numero_mes, materias(id, nombre)')
+      .select('numero_mes, materias(id, nombre, nivel)')
       .order('numero_mes')
-      .lte('numero_mes', duracionMeses)
 
     type MesRow = {
       numero_mes: number
-      materias: { id: string; nombre: string } | null
+      materias: { id: string; nombre: string; nivel: string } | null
     }
 
     const resultado: {
@@ -97,6 +102,11 @@ export async function GET() {
     for (const mes of ((meses ?? []) as unknown as MesRow[])) {
       const mat = mes.materias
       if (!mat) continue
+
+      // Sub-fix A: solo mostrar materias del nivel del alumno
+      if (alumnoNivel && mat.nivel !== alumnoNivel) continue
+      // Sub-fix B: si está pagado, nunca mostrar materias demo
+      if (inscripcionPagada && mat.nivel === 'demo') continue
 
       if (califMap.has(mat.id)) {
         resultado.push({
