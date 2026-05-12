@@ -268,42 +268,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── RESPALDO OFICIAL ── */}
-      <section className="respaldo-section" id="respaldo">
-        <div className="respaldo-inner">
-          {/* LEFT: texto */}
-          <div className="respaldo-text">
-            <div className="tag-line">Respaldo Oficial</div>
-            <h2 className="respaldo-title">{landing.respaldo_titulo}</h2>
-            <p className="respaldo-sub">Reconocido por la Dirección General del Bachillerato — SEP</p>
-
-            <div className="respaldo-badges">
-              {landing.respaldo_badges.map(b => (
-                <span key={b} className="respaldo-badge">{b}</span>
-              ))}
-            </div>
-
-            <p className="respaldo-desc">
-              {CONFIG.nombreCompleto} está oficialmente registrado ante la Secretaría de Educación Pública como Centro de Asesoría y Gestoría para certificación de Secundaria y Preparatoria.
-            </p>
-            <p className="respaldo-desc respaldo-desc--footer">
-              Con este respaldo oficial, nuestros alumnos obtienen certificados con validez en toda la República Mexicana, reconocidos por universidades e instituciones educativas.
-            </p>
-          </div>
-
-          {/* RIGHT: imagen del oficio */}
-          <div className="respaldo-img-wrap">
-            <Image
-              src="/oficio-dgb.png"
-              alt={`Oficio oficial DGB — ${CONFIG.nombreCompleto}`}
-              width={520}
-              height={640}
-              style={{ width: '100%', height: 'auto', display: 'block' }}
-            />
-          </div>
-        </div>
-      </section>
-
       {/* ── PLANES Y PRECIOS ── */}
       <section className="section-gray" id="planes">
         <div className="section-header">
