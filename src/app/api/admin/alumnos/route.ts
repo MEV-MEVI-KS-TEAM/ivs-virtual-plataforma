@@ -41,6 +41,7 @@ export async function GET() {
           nombre,
           apellidos,
           email,
+          telefono,
           foto_url
         )
       `)
@@ -54,7 +55,7 @@ export async function GET() {
         id: string; matricula?: string; nivel?: string; modalidad?: string
         sindicalizado?: boolean; activo?: boolean; meses_desbloqueados?: number
         inscripcion_pagada?: boolean; created_at: string
-        usuarios: { nombre?: string; apellidos?: string; email?: string; foto_url?: string | null } | null
+        usuarios: { nombre?: string; apellidos?: string; email?: string; telefono?: string | null; foto_url?: string | null } | null
       }
       const result = (data as unknown as Row[]).map(a => {
         const u = Array.isArray(a.usuarios) ? a.usuarios[0] : a.usuarios
@@ -71,6 +72,7 @@ export async function GET() {
           created_at:           a.created_at,
           nombre_completo:      [u?.nombre, u?.apellidos].filter(Boolean).join(' ') || '—',
           email:                u?.email ?? '—',
+          telefono:             u?.telefono ?? null,
           foto_url:             u?.foto_url ?? null,
         }
       })
@@ -95,6 +97,7 @@ export async function GET() {
           nombre,
           apellidos,
           email,
+          telefono,
           foto_url
         )
       `)
@@ -108,7 +111,7 @@ export async function GET() {
         id: string; matricula?: string; nivel?: string; modalidad?: string
         sindicalizado?: boolean; activo?: boolean; meses_desbloqueados?: number
         inscripcion_pagada?: boolean; created_at: string; usuario_id?: string
-        usuarios: { nombre?: string; apellidos?: string; email?: string; foto_url?: string | null } | null
+        usuarios: { nombre?: string; apellidos?: string; email?: string; telefono?: string | null; foto_url?: string | null } | null
       }
       const result2 = (data2 as unknown as Row2[]).map(a => {
         const u = Array.isArray(a.usuarios) ? a.usuarios[0] : a.usuarios
@@ -125,6 +128,7 @@ export async function GET() {
           created_at:           a.created_at,
           nombre_completo:      [u?.nombre, u?.apellidos].filter(Boolean).join(' ') || '—',
           email:                u?.email ?? '—',
+          telefono:             u?.telefono ?? null,
           foto_url:             u?.foto_url ?? null,
         }
       })
@@ -150,7 +154,7 @@ export async function GET() {
     }[]) {
       const { data: u } = await admin
         .from('usuarios')
-        .select('nombre, apellidos, email, foto_url')
+        .select('nombre, apellidos, email, telefono, foto_url')
         .eq('id', a.id)
         .single()
       resultFallback.push({
@@ -166,6 +170,7 @@ export async function GET() {
         created_at:           a.created_at,
         nombre_completo:      [(u as {nombre?:string}|null)?.nombre, (u as {apellidos?:string}|null)?.apellidos].filter(Boolean).join(' ') || '—',
         email:                (u as {email?:string}|null)?.email ?? '—',
+        telefono:             (u as {telefono?:string|null}|null)?.telefono ?? null,
         foto_url:             (u as {foto_url?:string|null}|null)?.foto_url ?? null,
       })
     }
@@ -187,12 +192,13 @@ export async function POST(request: NextRequest) {
     if (!isAdmin) return NextResponse.json({ error: 'Acceso denegado' }, { status: 403 })
 
     const body = await request.json()
-    const { nombre_completo, email, password, nivel, modalidad } = body
+    const { nombre_completo, email, telefono, password, nivel, modalidad } = body
 
     // Aceptar "nombre_completo" del form y dividirlo en nombre / apellidos
     const partes     = (nombre_completo as string | undefined)?.trim().split(/\s+/) ?? []
     const nombre     = partes[0] ?? ''
     const apellidos  = partes.slice(1).join(' ')
+    const telefonoLimpio = ((telefono as string | undefined) ?? '').replace(/\D/g, '') || null
 
     if (!nombre || !email || !password) {
       return NextResponse.json({ error: 'nombre, email y password son requeridos' }, { status: 400 })
@@ -223,7 +229,7 @@ export async function POST(request: NextRequest) {
     const matricula = `IVS-${year}-${rand}`
 
     // Insertar en usuarios
-    await admin.from('usuarios').insert({ id: newUserId, nombre, apellidos, email, rol: 'ALUMNO' })
+    await admin.from('usuarios').insert({ id: newUserId, nombre, apellidos, email, telefono: telefonoLimpio, rol: 'ALUMNO' })
 
     // Insertar en alumnos (nivel + modalidad obligatorios)
     const { data: alumnoData, error: alumnoError } = await admin
