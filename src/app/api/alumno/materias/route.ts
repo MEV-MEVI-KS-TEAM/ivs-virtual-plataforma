@@ -7,17 +7,26 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
-    // ── Alumno: nivel + meses desbloqueados ──────────────────────────────────
+    // ── Alumno: nivel + meses desbloqueados + modalidad ──────────────────────
     const { data: alumno } = await supabase
       .from('alumnos')
-      .select('nivel, meses_desbloqueados')
+      .select('nivel, meses_desbloqueados, modalidad, duracion_meses')
       .eq('id', user.id)
       .single()
 
     if (!alumno) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
 
-    const nivel              = (alumno as { nivel: string; meses_desbloqueados: number }).nivel
-    const mesesDesbloqueados = (alumno as { nivel: string; meses_desbloqueados: number }).meses_desbloqueados ?? 0
+    const alumnoRow = alumno as {
+      nivel: string
+      meses_desbloqueados: number
+      modalidad: string | null
+      duracion_meses: number | null
+    }
+    const nivel              = alumnoRow.nivel
+    const mesesDesbloqueados = alumnoRow.meses_desbloqueados ?? 0
+    // IVS no tiene lib/modalidades — derivar duración directamente de la columna o modalidad
+    const duracionMeses = alumnoRow.duracion_meses
+      ?? (alumnoRow.modalidad === '3_meses' ? 3 : 6)
 
     // ── Materias del nivel del alumno con meses y semanas ───────────────────
     const { data: materias, error } = await supabase
@@ -54,11 +63,54 @@ export async function GET() {
       activa: boolean; meses_contenido: MesRow[]
     }
 
-    const result = ((materias ?? []) as unknown as MateriaRow[]).map(mat => {
-      const meses        = mat.meses_contenido ?? []
-      const totalSemanas = meses.reduce((acc, mes) => acc + (mes.semanas?.length ?? 0), 0)
-      const numeroMes    = meses.length > 0 ? Math.min(...meses.map(m => m.numero_mes)) : 1
-      const disponible   = numeroMes <= mesesDesbloqueados
+    const allMaterias = ((materias ?? []) as unknown as MateriaRow[])
+
+    // ── Gating modality-aware (fallback dinámico sin lib/modalidades) ─────────
+    // Excluir tutoriales del conteo; materiasPorMes = ceil(regulares / duracionMeses)
+    const totalRegulares = allMaterias.filter(
+      m => m.nivel !== 'demo' && !m.nombre.toLowerCase().includes('tutor')
+    ).length
+    const materiasPorMes = duracionMeses > 0
+      ? Math.ceil(totalRegulares / duracionMeses)
+      : 2
+    const limiteMaterias = Math.max(0, mesesDesbloqueados * materiasPorMes)
+
+    // ── Calificaciones acreditadas del alumno ─────────────────────────────────
+    const { data: califs } = await supabase
+      .from('calificaciones')
+      .select('materia_id')
+      .eq('alumno_id', user.id)
+      .eq('acreditado', true)
+    const acreditadasSet = new Set(
+      (califs ?? []).map(c => (c as { materia_id: string }).materia_id)
+    )
+
+    const sorted = [...allMaterias].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
+
+    let idxRegular = 0
+    const result = sorted.map(mat => {
+      const meses          = mat.meses_contenido ?? []
+      const totalSemanas   = meses.reduce((acc, mes) => acc + (mes.semanas?.length ?? 0), 0)
+      const esTutorial     = mat.nivel === 'demo' || mat.nombre.toLowerCase().includes('tutor')
+      const estaAcreditada = acreditadasSet.has(mat.id)
+
+      if (esTutorial) {
+        return {
+          id:             mat.id,
+          nombre:         mat.nombre,
+          descripcion:    mat.descripcion ?? null,
+          icono:          mat.icono       ?? '📚',
+          color:          mat.color       ?? '#3AAFA9',
+          orden:          mat.orden       ?? 0,
+          total_meses:    meses.length,
+          total_semanas:  totalSemanas,
+          disponible:     true,
+        }
+      }
+
+      // Materia regular: gating modality-aware + acreditadas siempre visibles
+      const disponible = (mesesDesbloqueados > 0 && idxRegular < limiteMaterias) || estaAcreditada
+      idxRegular++
 
       return {
         id:             mat.id,
@@ -67,7 +119,6 @@ export async function GET() {
         icono:          mat.icono       ?? '📚',
         color:          mat.color       ?? '#3AAFA9',
         orden:          mat.orden       ?? 0,
-        numero_mes:     numeroMes,
         total_meses:    meses.length,
         total_semanas:  totalSemanas,
         disponible,
