@@ -87,30 +87,27 @@ export async function GET() {
 
     const sorted = [...allMaterias].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
 
-    let idxRegular = 0
+    // ── Gating "abrir mes = desbloquear siguientes pendientes" ────────────────
+    // Las acreditadas NO consumen lugares de la ventana: el límite
+    // (meses_desbloqueados × materiasPorMes) aplica SOLO a materias pendientes.
+    // Así, abrir un mes nuevo siempre revela las SIGUIENTES materias pendientes,
+    // incluso a alumnos que avanzaron durante la época "todo abierto".
+    let idxPendiente = 0
     const result = sorted.map(mat => {
       const meses          = mat.meses_contenido ?? []
       const totalSemanas   = meses.reduce((acc, mes) => acc + (mes.semanas?.length ?? 0), 0)
       const esTutorial     = mat.nivel === 'demo' || mat.nombre.toLowerCase().includes('tutor')
       const estaAcreditada = acreditadasSet.has(mat.id)
 
-      if (esTutorial) {
-        return {
-          id:             mat.id,
-          nombre:         mat.nombre,
-          descripcion:    mat.descripcion ?? null,
-          icono:          mat.icono       ?? '📚',
-          color:          mat.color       ?? '#3AAFA9',
-          orden:          mat.orden       ?? 0,
-          total_meses:    meses.length,
-          total_semanas:  totalSemanas,
-          disponible:     true,
-        }
+      let disponible: boolean
+      if (esTutorial || estaAcreditada) {
+        // Tutoriales y acreditadas: siempre visibles y NO consumen lugar de la ventana
+        disponible = true
+      } else {
+        // Materia pendiente: gating por ventana, contando solo pendientes
+        disponible = mesesDesbloqueados > 0 && idxPendiente < limiteMaterias
+        idxPendiente++
       }
-
-      // Materia regular: gating modality-aware + acreditadas siempre visibles
-      const disponible = (mesesDesbloqueados > 0 && idxRegular < limiteMaterias) || estaAcreditada
-      idxRegular++
 
       return {
         id:             mat.id,
