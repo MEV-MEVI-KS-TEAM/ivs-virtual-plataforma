@@ -445,90 +445,6 @@
 }
 .ivs-landing .billing-trust--footer { color: rgba(255,255,255,0.5); }
 
-/* ── CERTIFICADO SECTION ── */
-.ivs-landing .cert-section .cert-grid {
-  max-width: 1000px; margin: 0 auto;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start;
-}
-.ivs-landing .cert-single {
-  max-width: 600px; margin: 0 auto;
-}
-.ivs-landing .cert-card {
-  background: #fff; border: 1px solid var(--border);
-  border-radius: 16px; overflow: hidden;
-  box-shadow: 0 8px 32px rgba(27,58,87,0.10);
-}
-.ivs-landing .cert-img-wrap {
-  position: relative; width: 100%; padding-top: 70%;
-  background: #fff; border-radius: 12px; overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.15);
-}
-.ivs-landing .cert-card-body { padding: 20px; }
-.ivs-landing .cert-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 12px; border-radius: 20px; margin-bottom: 10px;
-  font-size: .7rem; font-weight: 700; letter-spacing: .06em;
-}
-.ivs-landing .cert-badge-mx { background: rgba(16,185,129,0.12); color: #059669; border: 1px solid rgba(16,185,129,0.25); }
-.ivs-landing .cert-card-title { font-size: 1rem; font-weight: 700; color: var(--navy); margin-bottom: 8px; }
-.ivs-landing .cert-card-desc  { font-size: .84rem; color: var(--text-mid); line-height: 1.6; margin-bottom: 10px; }
-.ivs-landing .cert-card-note  {
-  font-size: .82rem; font-weight: 600; color: var(--teal-dark);
-  background: rgba(58,175,169,0.08); border: 1px solid rgba(58,175,169,0.2);
-  border-radius: 8px; padding: 8px 12px; margin-top: 8px;
-}
-.ivs-landing .cert-badges-row {
-  display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px;
-}
-.ivs-landing .cert-meta-badge {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 14px; border-radius: 20px;
-  font-size: .78rem; font-weight: 600;
-  background: rgba(27,58,87,0.07); color: var(--navy);
-  border: 1px solid rgba(27,58,87,0.15);
-}
-
-.ivs-landing .cert-verify {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 12px; padding: 28px;
-  display: flex; flex-direction: column; gap: 14px;
-}
-.ivs-landing .cert-verify-title { font-size: 1rem; font-weight: 700; color: var(--navy); }
-.ivs-landing .cert-verify-text { font-size: .88rem; color: var(--text-mid); line-height: 1.6; }
-.ivs-landing .cert-folio-label { font-size: .8rem; font-weight: 600; color: var(--text-light); text-transform: uppercase; letter-spacing: .06em; }
-.ivs-landing .cert-folio {
-  font-family: monospace; font-size: 1.1rem; font-weight: 700;
-  color: var(--teal-dark); letter-spacing: .08em;
-  background: rgba(58,175,169,0.08); border: 1px solid rgba(58,175,169,0.2);
-  padding: 8px 14px; border-radius: 6px; display: inline-block;
-}
-.ivs-landing .cert-folio-hint { font-size: .78rem; color: var(--text-light); }
-.ivs-landing .btn-verify {
-  display: inline-flex; align-items: center;
-  padding: 11px 22px; border-radius: 8px;
-  font-size: .88rem; font-weight: 600;
-  background: var(--teal); color: #fff;
-  text-decoration: none; transition: all .2s; align-self: flex-start;
-}
-.ivs-landing .btn-verify:hover { background: var(--teal-dark); }
-
-/* ── LIGHTBOX ── */
-.ivs-landing .lb-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.85);
-  display: flex; align-items: center; justify-content: center;
-}
-.ivs-landing .lb-close {
-  position: absolute; top: 20px; right: 24px;
-  background: rgba(255,255,255,0.1); border: none;
-  color: #fff; font-size: 1.4rem;
-  width: 40px; height: 40px; border-radius: 50%;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-}
-.ivs-landing .lb-img-wrap {
-  position: relative; width: 90vw; max-width: 900px; height: 80vh;
-}
-
 /* ── PARA QUIÉN ── */
 .ivs-landing .quien-grid {
   max-width: 900px; margin: 0 auto;
@@ -794,7 +710,6 @@
   .ivs-landing .benefits-grid { grid-template-columns: 1fr 1fr; }
   .ivs-landing .convenios-grid { grid-template-columns: 1fr; }
   .ivs-landing .precios-grid { grid-template-columns: 1fr; }
-  .ivs-landing .cert-section .cert-grid { grid-template-columns: 1fr; }
   .ivs-landing .quien-grid { grid-template-columns: 1fr 1fr; }
   .ivs-landing .proceso-steps { grid-template-columns: 1fr; }
   .ivs-landing .hero-img { height: 280px; }

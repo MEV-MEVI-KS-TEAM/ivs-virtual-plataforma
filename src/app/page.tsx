@@ -25,7 +25,6 @@ const WaButton = ({ className = '' }: { className?: string }) => (
 
 
 export default function LandingPage() {
-  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const landing = CONFIG.landing
   const heroHighlight = 'Secundaria o Preparatoria'
@@ -38,12 +37,6 @@ export default function LandingPage() {
     const prev = document.documentElement.style.scrollBehavior
     document.documentElement.style.scrollBehavior = 'smooth'
     return () => { document.documentElement.style.scrollBehavior = prev }
-  }, [])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   return (
@@ -337,63 +330,6 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
-
-      {/* ── CERTIFICADO ── */}
-      <section className="section-light cert-section" id="certificado">
-        <div className="section-header">
-          <div className="tag-line">Validez Oficial</div>
-          <h2 className="sec-title">Certificado Oficial<br />con validez SEP</h2>
-          <p className="sec-sub">
-            Al completar tu programa recibes tu Certificado de Terminación de Estudios emitido por el Sistema Educativo Nacional,
-            con validez oficial en toda la República Mexicana sin necesidad de trámites adicionales.
-          </p>
-          <div className="cert-badges-row">
-            <span className="cert-meta-badge">{`🏫 CCT: ${landing.cct}`}</span>
-            <span className="cert-meta-badge">🇲🇽 Validez Nacional</span>
-            <span className="cert-meta-badge">✅ Firmado digitalmente por SEP</span>
-          </div>
-        </div>
-
-        <div className="cert-single">
-          <div className="cert-card">
-            <div
-              className="cert-img-wrap"
-              style={{ cursor: 'pointer' }}
-              onClick={() => setLightbox({ src: '/certificado-ivs.jpg', alt: `Certificado oficial SEP — ${CONFIG.nombreCompleto}` })}
-            >
-              <Image
-                src="/certificado-ivs.jpg"
-                alt={`Certificado oficial SEP — ${CONFIG.nombreCompleto}`}
-                fill
-                style={{ objectFit: 'contain' }}
-                sizes="(max-width: 768px) 100vw, 600px"
-              />
-            </div>
-            <div className="cert-card-body">
-              <div className="cert-badge cert-badge-mx">✅ CERTIFICADO SEP — {CONFIG.nombreCompleto.toUpperCase()}</div>
-              <div className="cert-card-title">Certificado de Terminación de Estudios</div>
-              <p className="cert-card-desc">
-                Emitido por el Sistema Educativo Nacional (Secundaria) o Sistema Nacional de Educación Media Superior (Preparatoria).
-                {' '}
-                Clave de Centro de Trabajo: <strong>{landing.cct}</strong>.
-              </p>
-              <p className="cert-card-note">
-                📌 Certificado válido para ingreso a universidades en toda la República Mexicana
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── LIGHTBOX ── */}
-      {lightbox && (
-        <div className="lb-overlay" onClick={() => setLightbox(null)}>
-          <button className="lb-close" onClick={() => setLightbox(null)}>✕</button>
-          <div className="lb-img-wrap" onClick={e => e.stopPropagation()}>
-            <Image src={lightbox.src} alt={lightbox.alt} fill style={{ objectFit: 'contain' }} sizes="100vw" />
-          </div>
-        </div>
-      )}
 
       {/* ── PARA QUIÉN ── */}
       <section className="section-gray">
