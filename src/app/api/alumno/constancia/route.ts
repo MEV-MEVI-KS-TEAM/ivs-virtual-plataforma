@@ -18,7 +18,7 @@ export async function GET() {
     // ── Alumno (schema nuevo: alumnos.id = user.id) ───────────────────────────
     const { data: alumno } = await supabase
       .from('alumnos')
-      .select('matricula, nivel, modalidad, meses_desbloqueados, created_at')
+      .select('matricula, nivel, modalidad, meses_desbloqueados, inscripcion_pagada, created_at')
       .eq('id', user.id)
       .single()
 
@@ -29,6 +29,9 @@ export async function GET() {
       .join(' ') || 'Alumno'
 
     const duracionMeses = alumno.modalidad === '3_meses' ? 3 : 6
+    const alumnoNivel        = alumno.nivel ?? null
+    const inscripcionPagada  = alumno.inscripcion_pagada ?? false
+    const mesesDesbloqueados = alumno.meses_desbloqueados ?? 0
 
     // ── Calificaciones ────────────────────────────────────────────────────────
     const { data: califs } = await supabase
@@ -43,13 +46,14 @@ export async function GET() {
       califMap.set(row.materia_id, row)
     }
 
-    // ── Materias de meses desbloqueados via meses_contenido ───────────────────
+    // ── Materias del plan via meses_contenido ─────────────────────────────────
     // meses_contenido.materia_id → materias.id (many-to-one → materias es objeto único)
+    // Port Bug 46 (f7d3edc): sin .lte — las acreditadas de meses posteriores
+    // al desbloqueo deben aparecer; el gating de Pendientes se hace en el loop
     const { data: meses } = await supabase
       .from('meses_contenido')
       .select('numero_mes, materias(id, nombre, nivel)')
       .order('numero_mes')
-      .lte('numero_mes', alumno.meses_desbloqueados ?? 0)
 
     type MesRow = {
       numero_mes: number
@@ -67,7 +71,19 @@ export async function GET() {
     for (const mes of ((meses ?? []) as unknown as MesRow[])) {
       const mat = mes.materias
       if (!mat) continue
+
+      // Port Bug 46 (f7d3edc): pagado → solo materias del nivel del alumno
+      // (excluye demo y otros niveles); sin pagar → solo demo
+      if (inscripcionPagada) {
+        if (alumnoNivel && mat.nivel !== alumnoNivel) continue
+      } else {
+        if (mat.nivel !== 'demo') continue
+      }
+
       const calif = califMap.get(mat.id)
+      // Acreditada siempre visible; Pendiente solo dentro de meses desbloqueados
+      if (!calif?.acreditado && mes.numero_mes > mesesDesbloqueados) continue
+
       materias_cursadas.push({
         materia_id:         mat.id,
         codigo:             '',
@@ -80,7 +96,6 @@ export async function GET() {
       })
     }
 
-    const mesesDesbloqueados = alumno.meses_desbloqueados ?? 0
     const porcentaje_avance = duracionMeses > 0
       ? Math.round((mesesDesbloqueados / duracionMeses) * 100)
       : 0

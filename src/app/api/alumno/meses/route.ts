@@ -13,12 +13,13 @@ export async function GET() {
     let mesesDesbloqueados = 0
     let inscripcionPagada  = false
     let duracionMeses      = 0
+    let alumnoNivel: string | null = null
     let alumnoEncontrado   = false
 
     // Intento 1: schema antiguo (alumnos.usuario_id)
     const { data: a1 } = await supabase
       .from('alumnos')
-      .select('meses_desbloqueados, inscripcion_pagada, planes_estudio(duracion_meses)')
+      .select('meses_desbloqueados, inscripcion_pagada, nivel, planes_estudio(duracion_meses)')
       .eq('usuario_id', user.id)
       .single()
 
@@ -27,10 +28,12 @@ export async function GET() {
       const row = a1 as unknown as {
         meses_desbloqueados: number
         inscripcion_pagada: boolean
+        nivel?: string
         planes_estudio: { duracion_meses: number } | null
       }
       mesesDesbloqueados = row.meses_desbloqueados ?? 0
       inscripcionPagada  = row.inscripcion_pagada  ?? false
+      alumnoNivel        = row.nivel ?? null
       duracionMeses      = row.planes_estudio?.duracion_meses ?? 6
     }
 
@@ -38,7 +41,7 @@ export async function GET() {
     if (!alumnoEncontrado) {
       const { data: a2 } = await supabase
         .from('alumnos')
-        .select('meses_desbloqueados, inscripcion_pagada, modalidad')
+        .select('meses_desbloqueados, inscripcion_pagada, modalidad, nivel')
         .eq('id', user.id)
         .single()
 
@@ -48,9 +51,11 @@ export async function GET() {
           meses_desbloqueados: number
           inscripcion_pagada: boolean
           modalidad?: string
+          nivel?: string
         }
         mesesDesbloqueados = row.meses_desbloqueados ?? 0
         inscripcionPagada  = row.inscripcion_pagada  ?? false
+        alumnoNivel        = row.nivel ?? null
         duracionMeses      = row.modalidad === '3_meses' ? 3 : 6
       }
     }
@@ -68,11 +73,20 @@ export async function GET() {
     // ── Obtener meses del contenido ───────────────────────────────────────────
     // Columnas correctas IVS: numero_mes (no 'numero'), color (no 'color_hex')
     // meses_contenido.materia_id → materias.id (many-to-one → materias es objeto único)
-    const { data: meses, error: mesesError } = await supabase
+    const { data: mesesRaw, error: mesesError } = await supabase
       .from('meses_contenido')
-      .select('*, materias(id, nombre, color)')
+      .select('*, materias(id, nombre, color, nivel)')
       .order('numero_mes')
       .lte('numero_mes', duracionMeses)
+
+    // Port Bug 46 (f7d3edc): filtrar materias de otros niveles y demo si pagada
+    const meses = (mesesRaw ?? []).filter((mes: unknown) => {
+      const mat = (mes as { materias: { nivel?: string | null } | null }).materias
+      if (!mat) return true
+      if (alumnoNivel && mat.nivel !== alumnoNivel) return false
+      if (inscripcionPagada && mat.nivel === 'demo') return false
+      return true
+    })
 
     // Si la tabla no existe o no tiene datos → generar meses ficticios
     if (mesesError || !meses || meses.length === 0) {
