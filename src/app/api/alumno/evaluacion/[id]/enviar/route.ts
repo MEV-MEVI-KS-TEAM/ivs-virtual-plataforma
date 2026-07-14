@@ -16,13 +16,16 @@ export async function POST(
     // Obtener alumno (schema nuevo: alumnos.id = user.id)
     const { data: alumnoData } = await supabase
       .from('alumnos')
-      .select('id, meses_desbloqueados')
+      .select('id, meses_desbloqueados, nivel, inscripcion_pagada')
       .eq('id', user.id)
       .single()
 
     if (!alumnoData) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
 
-    const alumno = alumnoData as { id: string; meses_desbloqueados: number }
+    const alumno = alumnoData as {
+      id: string; meses_desbloqueados: number
+      nivel: string | null; inscripcion_pagada: boolean | null
+    }
 
     // FIX #4: usar intentos_permitidos (no intentos_max), sin acceso por numero_mes
     const { data: evaluacion, error: evalError } = await supabase
@@ -43,16 +46,46 @@ export async function POST(
       return NextResponse.json({ error: 'Esta evaluación no está disponible' }, { status: 403 })
     }
 
+    // ── Guard canon (Bug 54): mismo criterio que el GET de evaluacion/[id] —
+    // bloquear la vista pero no el submit dejaría el hueco vivo.
+    // Columna real: numero_mes; el embed es to-many → llega como array.
     const { data: matAcceso } = await supabase
       .from('materias')
-      .select('nivel')
+      .select('nivel, meses_contenido(numero_mes)')
       .eq('id', ev.materia_id)
       .maybeSingle()
 
-    const esMateriaDemo = (matAcceso as { nivel?: string } | null)?.nivel === 'demo'
+    const mat = matAcceso as unknown as {
+      nivel: string | null
+      meses_contenido: { numero_mes: number }[] | { numero_mes: number } | null
+    } | null
 
-    if (!esMateriaDemo && alumno.meses_desbloqueados <= 0) {
-      return NextResponse.json({ error: 'No tienes meses desbloqueados' }, { status: 403 })
+    const rel = mat?.meses_contenido
+    const numerosMes = Array.isArray(rel) ? rel.map(r => r.numero_mes) : rel ? [rel.numero_mes] : []
+    const numeroMes = numerosMes.length > 0 ? Math.min(...numerosMes) : 0
+    const esMateriaDemo = mat?.nivel === 'demo'
+
+    const { data: califGuard } = await supabase
+      .from('calificaciones')
+      .select('acreditado')
+      .eq('alumno_id', alumno.id)
+      .eq('materia_id', ev.materia_id)
+      .maybeSingle()
+    const estaAcreditada = (califGuard as { acreditado?: boolean } | null)?.acreditado === true
+
+    if (!estaAcreditada) {
+      if (esMateriaDemo) {
+        if (alumno.inscripcion_pagada) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+      } else {
+        if (alumno.nivel && mat?.nivel && mat.nivel !== alumno.nivel) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+        if (numeroMes > alumno.meses_desbloqueados) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+      }
     }
 
     // Verificar intentos disponibles

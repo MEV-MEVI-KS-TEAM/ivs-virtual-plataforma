@@ -13,13 +13,16 @@ export async function GET(
     // Obtener alumno (schema nuevo: alumnos.id = user.id)
     const { data: alumnoData } = await supabase
       .from('alumnos')
-      .select('id, meses_desbloqueados')
+      .select('id, meses_desbloqueados, nivel, inscripcion_pagada')
       .eq('id', user.id)
       .single()
 
     if (!alumnoData) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
 
-    const alumno = alumnoData as { id: string; meses_desbloqueados: number }
+    const alumno = alumnoData as {
+      id: string; meses_desbloqueados: number
+      nivel: string | null; inscripcion_pagada: boolean | null
+    }
 
     // FIX #4: usar nombres reales del schema IVS (no titulo_en/tipo/intentos_max)
     const { data: evaluacion, error: evalError } = await supabase
@@ -40,16 +43,48 @@ export async function GET(
       return NextResponse.json({ error: 'Esta evaluación no está disponible' }, { status: 403 })
     }
 
-    // Verificar que la materia pertenece a un mes desbloqueado
-    const { data: mesData } = await supabase
+    // ── Guard canon (Bug 54): acreditadas siempre accesibles; pendientes solo si
+    // su mes está desbloqueado; demo solo sin pago; nunca materias de otro nivel.
+    // La columna real es numero_mes (el embed con 'numero' fallaba en silencio y
+    // dejaba numeroMes=0 → el candado nunca bloqueaba). materias→meses_contenido
+    // es to-many (UNIQUE(materia_id, numero_mes)) → el embed llega como array.
+    const { data: matData } = await supabase
       .from('materias')
-      .select('meses_contenido(numero)')
+      .select('nivel, meses_contenido(numero_mes)')
       .eq('id', ev.materia_id)
-      .single()
+      .maybeSingle()
 
-    const numeroMes = (mesData as unknown as { meses_contenido: { numero: number } | null })?.meses_contenido?.numero ?? 0
-    if (numeroMes > alumno.meses_desbloqueados) {
-      return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+    const mat = matData as unknown as {
+      nivel: string | null
+      meses_contenido: { numero_mes: number }[] | { numero_mes: number } | null
+    } | null
+
+    const rel = mat?.meses_contenido
+    const numerosMes = Array.isArray(rel) ? rel.map(r => r.numero_mes) : rel ? [rel.numero_mes] : []
+    const numeroMes = numerosMes.length > 0 ? Math.min(...numerosMes) : 0
+    const esMateriaDemo = mat?.nivel === 'demo'
+
+    const { data: calif } = await supabase
+      .from('calificaciones')
+      .select('acreditado')
+      .eq('alumno_id', alumno.id)
+      .eq('materia_id', ev.materia_id)
+      .maybeSingle()
+    const estaAcreditada = (calif as { acreditado?: boolean } | null)?.acreditado === true
+
+    if (!estaAcreditada) {
+      if (esMateriaDemo) {
+        if (alumno.inscripcion_pagada) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+      } else {
+        if (alumno.nivel && mat?.nivel && mat.nivel !== alumno.nivel) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+        if (numeroMes > alumno.meses_desbloqueados) {
+          return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
+        }
+      }
     }
 
     // Contar intentos
