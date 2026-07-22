@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { cargarContextoAcceso, tieneAccesoMateria } from '@/lib/acceso-materias'
 
 export async function GET(
   _request: NextRequest,
@@ -15,16 +16,20 @@ export async function GET(
     // Usar admin client para todas las queries de BD (bypassa RLS)
     const admin = createAdminClient()
 
-    // ── 1. Alumno: nivel + meses desbloqueados ────────────────────────────────
+    // ── 1. Alumno: nivel + plan + meses desbloqueados ─────────────────────────
     const { data: alumnoData } = await admin
       .from('alumnos')
-      .select('nivel, meses_desbloqueados')
+      .select('nivel, meses_desbloqueados, modalidad, duracion_meses, inscripcion_pagada')
       .eq('id', user.id)
       .single()
 
     if (!alumnoData) return Response.json({ error: 'Alumno no encontrado' }, { status: 404 })
 
-    const alumno = alumnoData as { nivel: string; meses_desbloqueados: number }
+    const alumno = alumnoData as {
+      nivel: string; meses_desbloqueados: number
+      modalidad: string | null; duracion_meses: number | null
+      inscripcion_pagada: boolean | null
+    }
 
     // ── 2. Materia ────────────────────────────────────────────────────────────
     const { data: materiaData } = await admin
@@ -40,15 +45,20 @@ export async function GET(
       nivel: string; icono: string | null; color: string | null; activa: boolean
     }
 
-    // ── 3. Control de acceso ──────────────────────────────────────────────────
-    // Materias demo: siempre accesibles
-    // Materias del nivel del alumno: accesibles si meses_desbloqueados > 0
-    if (materia.nivel === 'demo') {
-      // siempre permitir acceso — no retornar
-    } else if (alumno.meses_desbloqueados === 0) {
-      return Response.json({ error: 'Aún no tienes meses desbloqueados. Contacta a tu administrador.' }, { status: 403 })
-    } else if (materia.nivel !== alumno.nivel) {
-      return Response.json({ error: 'Esta materia no corresponde a tu nivel' }, { status: 403 })
+    // ── 3. Control de acceso (canon Bug 54: mismo criterio que el gate de
+    // evaluación — acreditada bypass, demo solo sin pago, nivel, ventana) ─────
+    const { materias: materiasNivel, acreditadas } = await cargarContextoAcceso(
+      admin, user.id, alumno.nivel ?? materia.nivel
+    )
+    const acceso = tieneAccesoMateria(alumno, materia, materiasNivel, acreditadas)
+    if (!acceso.acceso) {
+      const mensaje =
+        acceso.motivo === 'nivel_distinto'
+          ? 'Esta materia no corresponde a tu nivel'
+          : alumno.meses_desbloqueados === 0
+            ? 'Aún no tienes meses desbloqueados. Contacta a tu administrador.'
+            : 'No tienes acceso a esta materia'
+      return Response.json({ error: mensaje }, { status: 403 })
     }
 
     // ── 4. Meses del contenido → Semanas ──────────────────────────────────────

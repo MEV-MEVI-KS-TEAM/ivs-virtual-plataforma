@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { cargarContextoAcceso, tieneAccesoMateria } from '@/lib/acceso-materias'
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,13 +15,48 @@ export async function POST(request: NextRequest) {
     // Obtener alumno (schema nuevo: alumnos.id = user.id)
     const { data: alumnoData } = await supabase
       .from('alumnos')
-      .select('id')
+      .select('id, nivel, meses_desbloqueados, modalidad, duracion_meses, inscripcion_pagada')
       .eq('id', user.id)
       .single()
 
     if (!alumnoData) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
 
-    const alumno = alumnoData as { id: string }
+    const alumno = alumnoData as {
+      id: string; nivel: string | null; meses_desbloqueados: number
+      modalidad: string | null; duracion_meses: number | null
+      inscripcion_pagada: boolean | null
+    }
+
+    // ── Gate canon (lib/acceso-materias): la semana debe pertenecer a una
+    // materia accesible para el alumno (semana → mes_id → materia) ───────────
+    const { data: semanaGate } = await supabase
+      .from('semanas')
+      .select('id, mes_id')
+      .eq('id', semana_id)
+      .maybeSingle()
+
+    if (!semanaGate) return NextResponse.json({ error: 'Semana no encontrada' }, { status: 404 })
+
+    const { data: mesGate } = await supabase
+      .from('meses_contenido')
+      .select('materia_id, materias(id, nombre, nivel)')
+      .eq('id', (semanaGate as { mes_id: string }).mes_id)
+      .maybeSingle()
+
+    const matRel = (mesGate as { materias?: unknown } | null)?.materias
+    const materiaGate = (Array.isArray(matRel) ? matRel[0] : matRel) as
+      | { id: string; nombre: string; nivel: string | null }
+      | undefined
+
+    if (!materiaGate) return NextResponse.json({ error: 'Materia no encontrada' }, { status: 404 })
+
+    const { materias, acreditadas } = await cargarContextoAcceso(
+      supabase, user.id, alumno.nivel ?? materiaGate.nivel
+    )
+    const accesoMateria = tieneAccesoMateria(alumno, materiaGate, materias, acreditadas)
+    if (!accesoMateria.acceso) {
+      return NextResponse.json({ error: 'No tienes acceso a este contenido' }, { status: 403 })
+    }
 
     // Verificar si ya existía el progreso
     const { data: existente } = await supabase

@@ -10,14 +10,21 @@ interface Pregunta {
   id: string
   pregunta: string
   opciones: string[]
-  respuesta_correcta: number
   explicacion?: string   // opcional — se muestra cuando la BD lo provee
   orden: number
+}
+
+// La respuesta correcta ya no viaja en el GET: el servidor la revela por
+// pregunta al verificar (POST { pregunta_id, respuesta }).
+interface Correccion {
+  es_correcta: boolean
+  respuesta_correcta: number
 }
 
 interface RespuestaPrevia {
   respuestas: Record<string, number>
   completado_en: string
+  correctas?: number   // score calculado server-side (GET con quiz ya contestado)
 }
 
 interface SemanaQuizProps {
@@ -35,6 +42,9 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const [currentIdx, setCurrentIdx] = useState(0)
   const [seleccionadas, setSeleccionadas] = useState<Record<number, number>>({})
   const [respondidas, setRespondidas] = useState<Record<number, boolean>>({})
+  const [correcciones, setCorrecciones] = useState<Record<number, Correccion>>({})
+  const [verificando, setVerificando] = useState(false)
+  const [correctasFinal, setCorrectasFinal] = useState<number | null>(null)
   const [completado, setCompletado] = useState(false)
   const [guardando, setGuardando] = useState(false)
 
@@ -97,10 +107,33 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const seleccionada = seleccionadas[currentIdx]
   const yaRespondida = respondidas[currentIdx] === true
 
-  const handleOpcion = (idx: number) => {
-    if (yaRespondida) return
+  const handleOpcion = async (idx: number) => {
+    if (yaRespondida || verificando) return
+    setVerificando(true)
     setSeleccionadas(prev => ({ ...prev, [currentIdx]: idx }))
-    setRespondidas(prev => ({ ...prev, [currentIdx]: true }))
+    const preguntaIdx = currentIdx
+    try {
+      const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pregunta_id: preguntas[preguntaIdx].id, respuesta: idx }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCorrecciones(prev => ({
+          ...prev,
+          [preguntaIdx]: {
+            es_correcta: data.es_correcta === true,
+            respuesta_correcta: data.respuesta_correcta,
+          },
+        }))
+      }
+    } catch {
+      // silencioso — no bloquear al alumno; sin corrección la opción queda neutral
+    } finally {
+      setRespondidas(prev => ({ ...prev, [preguntaIdx]: true }))
+      setVerificando(false)
+    }
   }
 
   const handleNext = async () => {
@@ -124,11 +157,15 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
       }
     })
     try {
-      await fetch(`/api/alumno/quiz/${semanaId}`, {
+      const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ respuestas }),
       })
+      if (res.ok) {
+        const data = await res.json()
+        if (typeof data.correctas === 'number') setCorrectasFinal(data.correctas)
+      }
       setRespuestaPrevia({ respuestas, completado_en: new Date().toISOString() })
       setCompletado(true)
     } catch {
@@ -138,12 +175,13 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
     }
   }
 
-  // Vista de resultados (quiz completado)
+  // Vista de resultados (quiz completado) — score calificado server-side:
+  // del POST recién enviado, del GET (quiz previo) o de las verificaciones por pregunta.
   if (completado) {
-    const correct = preguntas.reduce((acc, p) => {
-      const resp = respuestaPrevia?.respuestas[p.id] ?? seleccionadas[preguntas.indexOf(p)]
-      return acc + (resp === p.respuesta_correcta ? 1 : 0)
-    }, 0)
+    const correct =
+      correctasFinal ??
+      respuestaPrevia?.correctas ??
+      Object.values(correcciones).filter(c => c.es_correcta).length
 
     return (
       <div className="rounded-xl p-5 space-y-3 mt-2" style={CARD}>
@@ -212,7 +250,7 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
         <div className="space-y-2">
           {(pregunta.opciones as string[]).map((opcion, i) => {
             const esSeleccionada = seleccionada === i
-            const esCorrecta = pregunta.respuesta_correcta === i
+            const esCorrecta = correcciones[currentIdx]?.respuesta_correcta === i
 
             let bg = 'rgba(255,255,255,0.03)'
             let borderColor = '#2A2F3E'
@@ -269,26 +307,26 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
           })}
         </div>
 
-        {/* Retroalimentación inmediata */}
+        {/* Retroalimentación inmediata (calificada server-side) */}
         {yaRespondida && (
           <div
             className="px-4 py-3 rounded-lg text-sm leading-relaxed"
             style={{
-              background: seleccionada === pregunta.respuesta_correcta
+              background: correcciones[currentIdx]?.es_correcta
                 ? 'rgba(16,185,129,0.08)'
                 : 'rgba(239,68,68,0.08)',
-              border: `1px solid ${seleccionada === pregunta.respuesta_correcta
+              border: `1px solid ${correcciones[currentIdx]?.es_correcta
                 ? 'rgba(16,185,129,0.25)'
                 : 'rgba(239,68,68,0.25)'}`,
               color: '#CBD5E1',
             }}
           >
             <span className="font-semibold mr-1">
-              {seleccionada === pregunta.respuesta_correcta ? '✓' : '✗'}
+              {correcciones[currentIdx]?.es_correcta ? '✓' : '✗'}
             </span>
             {pregunta.explicacion
               ? pregunta.explicacion
-              : seleccionada === pregunta.respuesta_correcta
+              : correcciones[currentIdx]?.es_correcta
                 ? '¡Correcto!'
                 : 'Incorrecto'}
           </div>

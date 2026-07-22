@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { calcularDisponibilidad, toMateriaVentana } from '@/lib/acceso-materias'
 
 export async function GET() {
   try {
@@ -24,9 +25,6 @@ export async function GET() {
     }
     const nivel              = alumnoRow.nivel
     const mesesDesbloqueados = alumnoRow.meses_desbloqueados ?? 0
-    // IVS no tiene lib/modalidades — derivar duración directamente de la columna o modalidad
-    const duracionMeses = alumnoRow.duracion_meses
-      ?? (alumnoRow.modalidad === '3_meses' ? 3 : 6)
 
     // ── Materias del nivel del alumno con meses y semanas ───────────────────
     const { data: materias, error } = await supabase
@@ -65,16 +63,6 @@ export async function GET() {
 
     const allMaterias = ((materias ?? []) as unknown as MateriaRow[])
 
-    // ── Gating modality-aware (fallback dinámico sin lib/modalidades) ─────────
-    // Excluir tutoriales del conteo; materiasPorMes = ceil(regulares / duracionMeses)
-    const totalRegulares = allMaterias.filter(
-      m => m.nivel !== 'demo' && !m.nombre.toLowerCase().includes('tutor')
-    ).length
-    const materiasPorMes = duracionMeses > 0
-      ? Math.ceil(totalRegulares / duracionMeses)
-      : 2
-    const limiteMaterias = Math.max(0, mesesDesbloqueados * materiasPorMes)
-
     // ── Calificaciones acreditadas del alumno ─────────────────────────────────
     const { data: califs } = await supabase
       .from('calificaciones')
@@ -85,29 +73,19 @@ export async function GET() {
       (califs ?? []).map(c => (c as { materia_id: string }).materia_id)
     )
 
+    // ── Gating por ventana modality-aware (fuente única: lib/acceso-materias) ─
+    const disponibilidad = calcularDisponibilidad(
+      alumnoRow,
+      allMaterias.map(toMateriaVentana),
+      acreditadasSet
+    )
+
     const sorted = [...allMaterias].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
 
-    // ── Gating "abrir mes = desbloquear siguientes pendientes" ────────────────
-    // Las acreditadas NO consumen lugares de la ventana: el límite
-    // (meses_desbloqueados × materiasPorMes) aplica SOLO a materias pendientes.
-    // Así, abrir un mes nuevo siempre revela las SIGUIENTES materias pendientes,
-    // incluso a alumnos que avanzaron durante la época "todo abierto".
-    let idxPendiente = 0
     const result = sorted.map(mat => {
-      const meses          = mat.meses_contenido ?? []
-      const totalSemanas   = meses.reduce((acc, mes) => acc + (mes.semanas?.length ?? 0), 0)
-      const esTutorial     = mat.nivel === 'demo' || mat.nombre.toLowerCase().includes('tutor')
-      const estaAcreditada = acreditadasSet.has(mat.id)
-
-      let disponible: boolean
-      if (esTutorial || estaAcreditada) {
-        // Tutoriales y acreditadas: siempre visibles y NO consumen lugar de la ventana
-        disponible = true
-      } else {
-        // Materia pendiente: gating por ventana, contando solo pendientes
-        disponible = mesesDesbloqueados > 0 && idxPendiente < limiteMaterias
-        idxPendiente++
-      }
+      const meses        = mat.meses_contenido ?? []
+      const totalSemanas = meses.reduce((acc, mes) => acc + (mes.semanas?.length ?? 0), 0)
+      const disponible   = disponibilidad.get(mat.id) === true
 
       return {
         id:             mat.id,

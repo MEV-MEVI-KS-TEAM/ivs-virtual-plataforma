@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { toMateriaVentana } from '@/lib/acceso-materias'
 
 export async function POST(
   _request: NextRequest,
@@ -53,28 +54,30 @@ export async function POST(
       )
     }
 
-    // ── Identificar materia del mes a cerrar ──────────────────────────────────
-    // Mes N del alumno = materia en posición N (1-indexed) ordenada por orden,nombre
-    // OFFSET = meses_desbloqueados - 1 (0-indexed)
-    const offset = meses_desbloqueados - 1
-    const { data: materias, error: matErr } = await admin
+    // ── Identificar materias del mes a cerrar ─────────────────────────────────
+    // Mes N del alumno = TODAS las materias del nivel cuyo primer numero_mes en
+    // meses_contenido es N. (Mapear por posición orden,nombre borraba la materia
+    // equivocada: en secundaria `orden` agrupa por tipo de materia y no sigue
+    // los meses — p.ej. la 3.ª por orden es Ciencias Naturales I, que es mes 4.)
+    const mesACerrar = meses_desbloqueados
+    const { data: matsNivel, error: matErr } = await admin
       .from('materias')
-      .select('id, nombre')
+      .select('id, nombre, nivel, orden, meses_contenido(numero_mes)')
       .eq('nivel', nivel)
       .eq('activa', true)
-      .order('orden', { ascending: true })
-      .order('nombre', { ascending: true })
-      .range(offset, offset)
 
-    if (matErr || !materias || materias.length === 0) {
+    const materiasDelMes = ((matsNivel ?? []) as unknown as Parameters<typeof toMateriaVentana>[0][])
+      .map(toMateriaVentana)
+      .filter(m => m.numero_mes === mesACerrar)
+
+    if (matErr || materiasDelMes.length === 0) {
       return NextResponse.json(
         { error: 'No se encontró la materia correspondiente al mes a cerrar' },
         { status: 400 }
       )
     }
 
-    const materia = materias[0] as { id: string; nombre: string }
-    const materiaId = materia.id
+    const materiaIds = materiasDelMes.map(m => m.id)
 
     // ── Obtener IDs intermedios para los DELETEs ──────────────────────────────
 
@@ -82,7 +85,7 @@ export async function POST(
     const { data: mesesContenido } = await admin
       .from('meses_contenido')
       .select('id')
-      .eq('materia_id', materiaId)
+      .in('materia_id', materiaIds)
 
     const mesIds = (mesesContenido ?? []).map((m: { id: string }) => m.id)
 
@@ -95,11 +98,11 @@ export async function POST(
       for (const s of semanas ?? []) semanaIds.push((s as { id: string }).id)
     }
 
-    // evaluaciones de esta materia
+    // evaluaciones de estas materias
     const { data: evaluaciones } = await admin
       .from('evaluaciones')
       .select('id')
-      .eq('materia_id', materiaId)
+      .in('materia_id', materiaIds)
 
     const evaluacionIds = (evaluaciones ?? []).map((e: { id: string }) => e.id)
 
@@ -154,7 +157,7 @@ export async function POST(
       .from('calificaciones')
       .delete({ count: 'exact' })
       .eq('alumno_id', alumnoId)
-      .eq('materia_id', materiaId)
+      .in('materia_id', materiaIds)
     countCal = calCount ?? 0
 
     // 5. Decrementar meses_desbloqueados
@@ -170,8 +173,9 @@ export async function POST(
     return NextResponse.json({
       success: true,
       mes_cerrado: meses_desbloqueados,
-      materia_id: materiaId,
-      materia_nombre: materia.nombre,
+      materias: materiasDelMes.map(m => ({ id: m.id, nombre: m.nombre })),
+      materia_id: materiaIds[0],
+      materia_nombre: materiasDelMes.map(m => m.nombre).join(', '),
       datos_borrados: {
         calificaciones: countCal,
         intentos:       countIntentos,

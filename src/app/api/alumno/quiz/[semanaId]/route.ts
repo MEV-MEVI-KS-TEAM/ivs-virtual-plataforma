@@ -1,19 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { cargarContextoAcceso, tieneAccesoMateria } from '@/lib/acceso-materias'
 
 /**
- * Quiz por semana — sin filtro por nivel (secundaria/preparatoria/demo).
+ * Quiz por semana. Acceso gateado por pertenencia de la semana a una materia
+ * accesible para el alumno (semana → mes_id → meses_contenido → materia, y el
+ * criterio canon de lib/acceso-materias). La respuesta correcta NUNCA viaja en
+ * el GET: la calificación ocurre server-side en el POST (modo verificación por
+ * pregunta o calificación del quiz completo al guardarlo).
  *
- * PostgREST:
- *   GET .../quiz_semana?select=*&semana_id=eq.{semanaId}&order=orden.asc
- * SQL equivalente:
- *   SELECT * FROM public.quiz_semana
- *   WHERE semana_id = $semanaId::uuid
- *   ORDER BY orden ASC;
- *
- * Se usa select('*') para incluir filas con solo `opciones` (JSONB) o solo opcion_a/b/c;
- * un select fijo sin `opciones` dejaba preguntas vacías en sec/prepa.
+ * Se usa select('*') sobre quiz_semana para incluir filas con solo `opciones`
+ * (JSONB) o solo opcion_a/b/c; un select fijo sin `opciones` dejaba preguntas
+ * vacías en sec/prepa.
  */
 
 /** Fila cruda de quiz_semana (schema usa columnas opcion_a/b/c/d en lugar de array — compatibilidad histórica) */
@@ -96,6 +95,61 @@ function mapQuizSemanaRow(row: QuizSemanaRow) {
   }
 
   return null
+}
+
+type AccesoQuiz =
+  | { ok: true }
+  | { ok: false; status: number; error: string }
+
+/** Gate canon: la semana debe pertenecer a una materia accesible para el alumno. */
+async function verificarAccesoQuiz(
+  supabase: SupabaseClient,
+  userId: string,
+  semanaId: string
+): Promise<AccesoQuiz> {
+  const { data: semanaData } = await supabase
+    .from('semanas')
+    .select('id, mes_id')
+    .eq('id', semanaId)
+    .maybeSingle()
+
+  if (!semanaData) return { ok: false, status: 404, error: 'Semana no encontrada' }
+
+  const { data: mesData } = await supabase
+    .from('meses_contenido')
+    .select('materia_id, materias(id, nombre, nivel)')
+    .eq('id', (semanaData as { mes_id: string }).mes_id)
+    .maybeSingle()
+
+  const matRel = (mesData as { materias?: unknown } | null)?.materias
+  const materia = (Array.isArray(matRel) ? matRel[0] : matRel) as
+    | { id: string; nombre: string; nivel: string | null }
+    | undefined
+
+  if (!materia) return { ok: false, status: 404, error: 'Materia no encontrada' }
+
+  const { data: alumnoData } = await supabase
+    .from('alumnos')
+    .select('nivel, meses_desbloqueados, modalidad, duracion_meses, inscripcion_pagada')
+    .eq('id', userId)
+    .single()
+
+  if (!alumnoData) return { ok: false, status: 404, error: 'Alumno no encontrado' }
+
+  const alumno = alumnoData as {
+    nivel: string | null; meses_desbloqueados: number
+    modalidad: string | null; duracion_meses: number | null
+    inscripcion_pagada: boolean | null
+  }
+
+  const { materias, acreditadas } = await cargarContextoAcceso(
+    supabase, userId, alumno.nivel ?? materia.nivel
+  )
+  const acceso = tieneAccesoMateria(alumno, materia, materias, acreditadas)
+  if (!acceso.acceso) {
+    return { ok: false, status: 403, error: 'No tienes acceso a este contenido' }
+  }
+  return { ok: true }
 }
 
 async function fetchRespuestaPreviaJsonb(
@@ -233,6 +287,11 @@ export async function GET(
       return NextResponse.json({ error: 'semanaId requerido' }, { status: 400 })
     }
 
+    const acceso = await verificarAccesoQuiz(supabase, user.id, semanaId)
+    if (!acceso.ok) {
+      return NextResponse.json({ error: acceso.error }, { status: acceso.status })
+    }
+
     const { data: rawRows, error: quizErr } = await supabase
       .from('quiz_semana')
       .select('*')
@@ -248,17 +307,9 @@ export async function GET(
       ?.map(mapQuizSemanaRow)
       .filter((p): p is NonNullable<typeof p> => p != null) ?? []
 
-    const { data: alumnoData } = await supabase
-      .from('alumnos')
-      .select('id')
-      .eq('id', user.id)
-      .single()
+    const alumnoId = user.id // alumnos.id = user.id (existencia verificada en el gate)
 
-    if (!alumnoData) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
-
-    const { id: alumnoId } = alumnoData as { id: string }
-
-    let respuestaPrevia =
+    const respuestaPrevia =
       (await fetchRespuestaPreviaJsonb(supabase, alumnoId, semanaId)) ??
       (await fetchRespuestaPreviaLegacy(
         supabase,
@@ -266,9 +317,29 @@ export async function GET(
         preguntas.map(p => p.id)
       ))
 
+    // La respuesta correcta no viaja al cliente: solo el POST califica.
+    const preguntasPublicas = preguntas.map(p => ({
+      id: p.id,
+      pregunta: p.pregunta,
+      opciones: p.opciones,
+      explicacion: p.explicacion,
+      orden: p.orden,
+    }))
+
+    // Quiz ya contestado: incluir el score calculado server-side.
+    const respuestaPreviaConScore = respuestaPrevia
+      ? {
+          ...respuestaPrevia,
+          correctas: preguntas.reduce(
+            (acc, p) => acc + ((respuestaPrevia.respuestas[p.id] ?? -1) === p.respuesta_correcta ? 1 : 0),
+            0
+          ),
+        }
+      : null
+
     return NextResponse.json({
-      preguntas,
-      respuesta_previa: respuestaPrevia,
+      preguntas: preguntasPublicas,
+      respuesta_previa: respuestaPreviaConScore,
     })
   } catch (e) {
     console.error('[quiz GET]', e)
@@ -290,26 +361,80 @@ export async function POST(
       return NextResponse.json({ error: 'semanaId requerido' }, { status: 400 })
     }
 
+    const acceso = await verificarAccesoQuiz(supabase, user.id, semanaId)
+    if (!acceso.ok) {
+      return NextResponse.json({ error: acceso.error }, { status: acceso.status })
+    }
+
     const body = await request.json()
+    const alumnoId = user.id // alumnos.id = user.id (existencia verificada en el gate)
+
+    // ── Modo verificación por pregunta (feedback inmediato, no persiste) ─────
+    const preguntaId = (body as { pregunta_id?: unknown })?.pregunta_id
+    if (typeof preguntaId === 'string' && preguntaId !== '') {
+      const idx = Number((body as { respuesta?: unknown }).respuesta)
+      if (!Number.isInteger(idx) || idx < 0 || idx > 3) {
+        return NextResponse.json({ error: 'respuesta inválida' }, { status: 400 })
+      }
+
+      const { data: filaPregunta } = await supabase
+        .from('quiz_semana')
+        .select('*')
+        .eq('id', preguntaId)
+        .eq('semana_id', semanaId)
+        .maybeSingle()
+
+      const mapped = filaPregunta ? mapQuizSemanaRow(filaPregunta as QuizSemanaRow) : null
+      if (!mapped) {
+        return NextResponse.json({ error: 'Pregunta no encontrada' }, { status: 404 })
+      }
+
+      return NextResponse.json({
+        es_correcta: idx === mapped.respuesta_correcta,
+        respuesta_correcta: mapped.respuesta_correcta,
+      })
+    }
+
+    // ── Modo quiz completo: calificar server-side y guardar ──────────────────
     const { respuestas } = body as { respuestas: Record<string, number> }
 
     if (!respuestas || typeof respuestas !== 'object') {
       return NextResponse.json({ error: 'respuestas requeridas' }, { status: 400 })
     }
 
-    const { data: alumnoData } = await supabase
-      .from('alumnos')
-      .select('id')
-      .eq('id', user.id)
-      .single()
+    const { data: rawRows, error: quizErr } = await supabase
+      .from('quiz_semana')
+      .select('*')
+      .eq('semana_id', semanaId)
+      .order('orden', { ascending: true })
 
-    if (!alumnoData) return NextResponse.json({ error: 'Alumno no encontrado' }, { status: 404 })
+    if (quizErr) {
+      console.error('[quiz POST] quiz_semana', quizErr)
+      return NextResponse.json({ error: 'Error al calificar' }, { status: 500 })
+    }
 
-    const { id: alumnoId } = alumnoData as { id: string }
+    const preguntas = (rawRows as QuizSemanaRow[] | null)
+      ?.map(mapQuizSemanaRow)
+      .filter((p): p is NonNullable<typeof p> => p != null) ?? []
+
+    let correctas = 0
+    const porPregunta: Record<string, boolean> = {}
+    for (const p of preguntas) {
+      const esCorrecta = (respuestas[p.id] ?? -1) === p.respuesta_correcta
+      porPregunta[p.id] = esCorrecta
+      if (esCorrecta) correctas++
+    }
+
+    const resultado = {
+      ok: true,
+      correctas,
+      total: preguntas.length,
+      por_pregunta: porPregunta,
+    }
 
     const jsonb = await saveRespuestasJsonb(supabase, alumnoId, semanaId, respuestas)
     if (!jsonb.error) {
-      return NextResponse.json({ ok: true })
+      return NextResponse.json(resultado)
     }
 
     const msg = (jsonb.error.message ?? '').toLowerCase()
@@ -331,7 +456,7 @@ export async function POST(
       return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json(resultado)
   } catch (e) {
     console.error('[quiz POST]', e)
     return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })

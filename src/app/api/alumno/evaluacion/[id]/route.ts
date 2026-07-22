@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { cargarContextoAcceso, dentroDeVentana } from '@/lib/acceso-materias'
 
 export async function GET(
   _request: NextRequest,
@@ -13,7 +14,7 @@ export async function GET(
     // Obtener alumno (schema nuevo: alumnos.id = user.id)
     const { data: alumnoData } = await supabase
       .from('alumnos')
-      .select('id, meses_desbloqueados, nivel, inscripcion_pagada')
+      .select('id, meses_desbloqueados, nivel, inscripcion_pagada, modalidad, duracion_meses')
       .eq('id', user.id)
       .single()
 
@@ -22,6 +23,7 @@ export async function GET(
     const alumno = alumnoData as {
       id: string; meses_desbloqueados: number
       nivel: string | null; inscripcion_pagada: boolean | null
+      modalidad: string | null; duracion_meses: number | null
     }
 
     // FIX #4: usar nombres reales del schema IVS (no titulo_en/tipo/intentos_max)
@@ -43,25 +45,17 @@ export async function GET(
       return NextResponse.json({ error: 'Esta evaluación no está disponible' }, { status: 403 })
     }
 
-    // ── Guard canon (Bug 54): acreditadas siempre accesibles; pendientes solo si
-    // su mes está desbloqueado; demo solo sin pago; nunca materias de otro nivel.
-    // La columna real es numero_mes (el embed con 'numero' fallaba en silencio y
-    // dejaba numeroMes=0 → el candado nunca bloqueaba). materias→meses_contenido
-    // es to-many (UNIQUE(materia_id, numero_mes)) → el embed llega como array.
+    // ── Guard canon (Bug 54): acreditadas siempre accesibles; demo solo sin
+    // pago; nunca materias de otro nivel; pendientes solo dentro de la ventana
+    // modality-aware (lib/acceso-materias — el MISMO criterio que decide
+    // `disponible` en /api/alumno/materias, para que lista y gate no diverjan).
     const { data: matData } = await supabase
       .from('materias')
-      .select('nivel, meses_contenido(numero_mes)')
+      .select('nivel')
       .eq('id', ev.materia_id)
       .maybeSingle()
 
-    const mat = matData as unknown as {
-      nivel: string | null
-      meses_contenido: { numero_mes: number }[] | { numero_mes: number } | null
-    } | null
-
-    const rel = mat?.meses_contenido
-    const numerosMes = Array.isArray(rel) ? rel.map(r => r.numero_mes) : rel ? [rel.numero_mes] : []
-    const numeroMes = numerosMes.length > 0 ? Math.min(...numerosMes) : 0
+    const mat = matData as unknown as { nivel: string | null } | null
     const esMateriaDemo = mat?.nivel === 'demo'
 
     const { data: calif } = await supabase
@@ -81,7 +75,10 @@ export async function GET(
         if (alumno.nivel && mat?.nivel && mat.nivel !== alumno.nivel) {
           return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
         }
-        if (numeroMes > alumno.meses_desbloqueados) {
+        const { materias: materiasNivel, acreditadas } = await cargarContextoAcceso(
+          supabase, alumno.id, alumno.nivel ?? mat?.nivel ?? null
+        )
+        if (!dentroDeVentana(alumno, materiasNivel, acreditadas, ev.materia_id)) {
           return NextResponse.json({ error: 'No tienes acceso a esta evaluación' }, { status: 403 })
         }
       }
