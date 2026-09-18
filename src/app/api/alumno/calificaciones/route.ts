@@ -96,7 +96,7 @@ export async function GET() {
       codigo:         string
       nombre_materia: string
       mes_numero:     number
-      estado:         'Acreditada' | 'No acreditada' | 'Pendiente'
+      estado:         'Acreditada' | 'No acreditada' | 'Pendiente' | 'Bloqueada'
     }[] = []
 
     for (const mes of ((meses ?? []) as unknown as MesRow[])) {
@@ -116,13 +116,17 @@ export async function GET() {
           mes_numero:     mes.numero_mes,
           estado:         califMap.get(mat.id) ? 'Acreditada' : 'No acreditada',
         })
-      } else if (mes.numero_mes <= mesesDesbloqueados) {
+      } else {
+        // Sin fila de calificación: dentro de la ventana pagada es "Pendiente";
+        // fuera de ella es "Bloqueada" y SE SIGUE LISTANDO. Antes se omitía, y
+        // entonces bajar `meses_desbloqueados` hacía DESAPARECER la materia de
+        // la lista — el alumno lo lee como "me borraron la materia".
         resultado.push({
           materia_id:     mat.id,
           codigo:         '',
           nombre_materia: mat.nombre,
           mes_numero:     mes.numero_mes,
-          estado:         'Pendiente',
+          estado:         mes.numero_mes <= mesesDesbloqueados ? 'Pendiente' : 'Bloqueada',
         })
       }
     }
@@ -130,6 +134,7 @@ export async function GET() {
     const acreditadas    = resultado.filter(r => r.estado === 'Acreditada').length
     const noAcreditadas  = resultado.filter(r => r.estado === 'No acreditada').length
     const pendientes     = resultado.filter(r => r.estado === 'Pendiente').length
+    const bloqueadas     = resultado.filter(r => r.estado === 'Bloqueada').length
 
     return NextResponse.json({
       materias: resultado,
@@ -138,6 +143,7 @@ export async function GET() {
         materias_acreditadas:    acreditadas,
         materias_no_acreditadas: noAcreditadas,
         materias_pendientes:     pendientes,
+        materias_bloqueadas:     bloqueadas,
       },
     })
   } catch (err) {

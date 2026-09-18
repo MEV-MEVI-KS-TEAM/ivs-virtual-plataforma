@@ -92,24 +92,57 @@ export async function GET() {
     if (mesesError || !meses || meses.length === 0) {
       const mesesFicticios = Array.from({ length: duracionMeses || 6 }, (_, i) => ({
         id:          `mes-ficticio-${i + 1}`,
+        numero:      i + 1,
         numero_mes:  i + 1,
         titulo:      `Mes ${i + 1}`,
-        materias:    null,
+        materias:    [],
         desbloqueado: (i + 1) <= mesesDesbloqueados,
       }))
       return NextResponse.json(mesesFicticios)
     }
 
-    const result = meses.map((mes: unknown) => {
-      const m = mes as {
-        id: string
-        numero_mes: number
-        titulo: string
-        materias: { id: string; nombre: string; color: string | null } | null
+    type Row = {
+      id: string
+      numero_mes: number
+      titulo: string
+      materias: { id: string; nombre: string; color: string | null } | null
+    }
+
+    // Un registro de meses_contenido = UN MES DE UNA MATERIA. Devolverlos tal cual
+    // le pintaba al alumno una tarjeta por materia (12 "meses" en un plan de 6),
+    // todas con "0 materias" y enlace a /alumno/mes/undefined, porque el
+    // componente espera `numero` y un ARREGLO de materias. Se agrupa por
+    // numero_mes y se emiten ambos nombres de campo (port de plantilla main).
+    const porNumero = new Map<number, { titulo: string; materias: { id: string; codigo: string; nombre: string; color_hex: string }[] }>()
+
+    for (const raw of meses as unknown as Row[]) {
+      const nm  = raw.numero_mes
+      const mat = raw.materias
+      if (!porNumero.has(nm)) {
+        porNumero.set(nm, { titulo: raw.titulo || `Mes ${nm}`, materias: [] })
       }
+      const bucket = porNumero.get(nm)!
+      if (raw.titulo) bucket.titulo = raw.titulo
+      if (mat) {
+        bucket.materias.push({
+          id:        mat.id,
+          codigo:    '',
+          nombre:    mat.nombre,
+          color_hex: mat.color ?? '#3AAFA9',
+        })
+      }
+    }
+
+    const result = Array.from({ length: duracionMeses || 6 }, (_, i) => {
+      const n   = i + 1
+      const agg = porNumero.get(n)
       return {
-        ...m,
-        desbloqueado: m.numero_mes <= mesesDesbloqueados,
+        id:           agg?.materias[0]?.id ?? `mes-resumen-${n}`,
+        numero:       n,
+        numero_mes:   n,
+        titulo:       agg?.titulo ?? `Mes ${n}`,
+        materias:     agg?.materias ?? [],
+        desbloqueado: n <= mesesDesbloqueados,
       }
     })
 

@@ -16,7 +16,9 @@ interface MateriaResumen {
 
 interface Mes {
   id: string
-  numero: number
+  /** La API sirve ambos; `numero_mes` queda por compatibilidad con el payload viejo. */
+  numero?: number
+  numero_mes?: number
   titulo: string
   desbloqueado: boolean
   materias: MateriaResumen[]
@@ -38,7 +40,12 @@ export default function MesPage() {
       .then(r => r.json())
       .then((data: Mes[]) => {
         if (!Array.isArray(data)) { setError('Error al cargar meses'); return }
-        const found = data.find(m => m.numero === numero)
+        // Tolerante a las dos formas del payload: la API sirve `numero` y
+        // `numero_mes`; antes solo llegaba `numero_mes` y este find no
+        // encontraba NUNCA nada — /alumno/mes/N fallaba para todo alumno.
+        const found = data.find(m =>
+          (m.numero ?? (m as { numero_mes?: number }).numero_mes) === numero
+        )
         if (!found) { setError('Mes no encontrado'); return }
         if (!found.desbloqueado) { router.replace('/alumno'); return }
         setMes(found)
@@ -75,7 +82,7 @@ export default function MesPage() {
         </button>
         <div>
           <h2 className="text-xl font-bold text-gray-900">
-            Mes {mes.numero}{mes.titulo ? ` — ${mes.titulo}` : ''}
+            Mes {mes.numero ?? mes.numero_mes ?? numero}{mes.titulo ? ` — ${mes.titulo}` : ''}
           </h2>
           <p className="text-sm mt-0.5" style={{ color: '#94A3B8' }}>
             {mes.materias.length} materia{mes.materias.length !== 1 ? 's' : ''}

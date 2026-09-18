@@ -3,6 +3,22 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { toMateriaVentana } from '@/lib/acceso-materias'
 
+/**
+ * Quita el último mes desbloqueado del alumno.
+ *
+ * NO BORRA NADA. Antes hacía cuatro DELETE duros (quiz_respuestas,
+ * progreso_semanas, intentos_evaluacion y calificaciones) sin respaldo ni
+ * bitácora: en IVS se disparó 6 veces y destruyó 7 calificaciones ganadas,
+ * entre ellas el mes 2 completo de IVS-2026-0020, que tuvo que rehacerlo.
+ *
+ * Borrar nunca fue necesario para revocar el acceso: la ventana de
+ * `lib/acceso-materias` ya oculta lo no pagado por posición absoluta, así que
+ * bajar `meses_desbloqueados` basta. Y el canon del Bug 54 dice que una
+ * materia acreditada se respeta: sigue legible y conserva su constancia.
+ *
+ * Si alguna vez hace falta un "reiniciar avance", va como acción aparte, con
+ * respaldo previo y jamás sobre filas con `acreditado = true`.
+ */
 export async function POST(
   _request: NextRequest,
   { params }: { params: { id: string } }
@@ -49,18 +65,18 @@ export async function POST(
 
     if (meses_desbloqueados <= 0) {
       return NextResponse.json(
-        { error: 'El alumno no tiene meses desbloqueados que cerrar' },
+        { error: 'El alumno no tiene meses desbloqueados que quitar' },
         { status: 400 }
       )
     }
 
-    // ── Identificar materias del mes a cerrar ─────────────────────────────────
+    // ── Identificar las materias del mes, SOLO para nombrarlas en la respuesta ─
     // Mes N del alumno = TODAS las materias del nivel cuyo primer numero_mes en
-    // meses_contenido es N. (Mapear por posición orden,nombre borraba la materia
+    // meses_contenido es N. (Mapear por posición orden,nombre nombraba la materia
     // equivocada: en secundaria `orden` agrupa por tipo de materia y no sigue
     // los meses — p.ej. la 3.ª por orden es Ciencias Naturales I, que es mes 4.)
-    const mesACerrar = meses_desbloqueados
-    const { data: matsNivel, error: matErr } = await admin
+    const mesAQuitar = meses_desbloqueados
+    const { data: matsNivel } = await admin
       .from('materias')
       .select('id, nombre, nivel, orden, meses_contenido(numero_mes)')
       .eq('nivel', nivel)
@@ -68,99 +84,9 @@ export async function POST(
 
     const materiasDelMes = ((matsNivel ?? []) as unknown as Parameters<typeof toMateriaVentana>[0][])
       .map(toMateriaVentana)
-      .filter(m => m.numero_mes === mesACerrar)
+      .filter(m => m.numero_mes === mesAQuitar)
 
-    if (matErr || materiasDelMes.length === 0) {
-      return NextResponse.json(
-        { error: 'No se encontró la materia correspondiente al mes a cerrar' },
-        { status: 400 }
-      )
-    }
-
-    const materiaIds = materiasDelMes.map(m => m.id)
-
-    // ── Obtener IDs intermedios para los DELETEs ──────────────────────────────
-
-    // meses_contenido → semanas
-    const { data: mesesContenido } = await admin
-      .from('meses_contenido')
-      .select('id')
-      .in('materia_id', materiaIds)
-
-    const mesIds = (mesesContenido ?? []).map((m: { id: string }) => m.id)
-
-    const semanaIds: string[] = []
-    if (mesIds.length > 0) {
-      const { data: semanas } = await admin
-        .from('semanas')
-        .select('id')
-        .in('mes_id', mesIds)
-      for (const s of semanas ?? []) semanaIds.push((s as { id: string }).id)
-    }
-
-    // evaluaciones de estas materias
-    const { data: evaluaciones } = await admin
-      .from('evaluaciones')
-      .select('id')
-      .in('materia_id', materiaIds)
-
-    const evaluacionIds = (evaluaciones ?? []).map((e: { id: string }) => e.id)
-
-    // quizzes de estas semanas
-    const quizIds: string[] = []
-    if (semanaIds.length > 0) {
-      const { data: quizzes } = await admin
-        .from('quiz_semana')
-        .select('id')
-        .in('semana_id', semanaIds)
-      for (const q of quizzes ?? []) quizIds.push((q as { id: string }).id)
-    }
-
-    // ── Borrar datos del alumno en orden ──────────────────────────────────────
-    let countQuiz = 0
-    let countProgreso = 0
-    let countIntentos = 0
-    let countCal = 0
-
-    // 1. quiz_respuestas
-    if (quizIds.length > 0) {
-      const { count } = await admin
-        .from('quiz_respuestas')
-        .delete({ count: 'exact' })
-        .eq('alumno_id', alumnoId)
-        .in('quiz_id', quizIds)
-      countQuiz = count ?? 0
-    }
-
-    // 2. progreso_semanas
-    if (semanaIds.length > 0) {
-      const { count } = await admin
-        .from('progreso_semanas')
-        .delete({ count: 'exact' })
-        .eq('alumno_id', alumnoId)
-        .in('semana_id', semanaIds)
-      countProgreso = count ?? 0
-    }
-
-    // 3. intentos_evaluacion
-    if (evaluacionIds.length > 0) {
-      const { count } = await admin
-        .from('intentos_evaluacion')
-        .delete({ count: 'exact' })
-        .eq('alumno_id', alumnoId)
-        .in('evaluacion_id', evaluacionIds)
-      countIntentos = count ?? 0
-    }
-
-    // 4. calificaciones
-    const { count: calCount } = await admin
-      .from('calificaciones')
-      .delete({ count: 'exact' })
-      .eq('alumno_id', alumnoId)
-      .in('materia_id', materiaIds)
-    countCal = calCount ?? 0
-
-    // 5. Decrementar meses_desbloqueados
+    // ── Única escritura: bajar el contador de meses pagados ───────────────────
     const { error: updateErr } = await admin
       .from('alumnos')
       .update({ meses_desbloqueados: meses_desbloqueados - 1 })
@@ -172,16 +98,12 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      mes_cerrado: meses_desbloqueados,
+      mes_quitado: mesAQuitar,
+      mes_cerrado: mesAQuitar, // compat con clientes viejos
+      meses_desbloqueados: meses_desbloqueados - 1,
       materias: materiasDelMes.map(m => ({ id: m.id, nombre: m.nombre })),
-      materia_id: materiaIds[0],
       materia_nombre: materiasDelMes.map(m => m.nombre).join(', '),
-      datos_borrados: {
-        calificaciones: countCal,
-        intentos:       countIntentos,
-        progreso:       countProgreso,
-        quizzes:        countQuiz,
-      },
+      avance_conservado: true,
     })
   } catch (err) {
     console.error('[POST /api/admin/alumnos/[id]/cerrar-mes]', err)

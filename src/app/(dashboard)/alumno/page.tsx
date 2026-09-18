@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -33,7 +33,9 @@ interface MateriaResumen {
 
 interface Mes {
   id:          string
-  numero:      number
+  /** La API sirve ambos; `numero_mes` queda por compatibilidad con el payload viejo. */
+  numero?:     number
+  numero_mes?: number
   titulo:      string
   desbloqueado: boolean
   materias:    MateriaResumen[]
@@ -116,6 +118,27 @@ export default function AlumnoDashboard() {
     }
   }, [searchParams, router, showToast])
 
+  // Logros + racha. Vive fuera del efecto de carga para que la carga inicial
+  // pueda esperarlo: colgado de un segundo useEffect dependiente de `perfil`,
+  // la tarjeta se pintaba con `logros = []` y el contador saltaba 0/8 -> 2/8.
+  const cargarLogrosYRacha = useCallback(async (alumnoId: string) => {
+    const sb = createClient()
+    const { data, error: logrosErr } = await sb
+      .from('logros_alumno')
+      .select('tipo_logro, fecha_obtenido')
+      .eq('alumno_id', alumnoId)
+    if (logrosErr) console.error('[alumno/dashboard] logros_alumno:', logrosErr)
+    if (data) setLogros(data as Array<{ tipo_logro: string; fecha_obtenido: string }>)
+
+    const { data: rachaData, error: rachaErr } = await sb
+      .from('racha_actividad')
+      .select('racha_actual')
+      .eq('alumno_id', alumnoId)
+      .maybeSingle()
+    if (rachaErr) console.error('[alumno/dashboard] racha_actividad:', rachaErr)
+    if (rachaData) setDiasRacha((rachaData as { racha_actual: number }).racha_actual ?? 0)
+  }, [])
+
   // Fetch data
   useEffect(() => {
     Promise.all([
@@ -123,7 +146,7 @@ export default function AlumnoDashboard() {
       fetch('/api/alumno/meses').then(r => r.json()),
       fetch('/api/alumno/calificaciones').then(r => r.json()),
       fetch('/api/alumno/materias').then(r => r.json()),
-    ]).then(([p, m, c, mat]) => {
+    ]).then(async ([p, m, c, mat]) => {
       setPerfil(p)
       if (m?.demo === true) {
         setDemo(true); setMeses([])
@@ -138,39 +161,20 @@ export default function AlumnoDashboard() {
         .filter(x => x.disponible)
         .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))[0]
       setPrimeraMateriaId(primera?.id ?? null)
-    }).finally(() => setLoading(false))
-  }, [])
 
-  // Logros + racha (y refresco al completar semana en otra vista vía evento)
+      // Se espera ANTES de apagar el skeleton: así el contador de logros nunca
+      // se pinta con el arreglo vacío.
+      if (p?.id) await cargarLogrosYRacha(p.id)
+    }).finally(() => setLoading(false))
+  }, [cargarLogrosYRacha])
+
+  // Refresco al completar una semana en otra vista (evento propio)
   useEffect(() => {
     if (!perfil) return
-
-    const fetchLogrosYRacha = async () => {
-      const sb = createClient()
-      const { data, error: logrosErr } = await sb
-        .from('logros_alumno')
-        .select('tipo_logro, fecha_obtenido')
-        .eq('alumno_id', perfil.id)
-      if (logrosErr) console.error('[alumno/dashboard] logros_alumno:', logrosErr)
-      if (data) setLogros(data as Array<{ tipo_logro: string; fecha_obtenido: string }>)
-
-      const { data: rachaData, error: rachaErr } = await sb
-        .from('racha_actividad')
-        .select('racha_actual')
-        .eq('alumno_id', perfil.id)
-        .maybeSingle()
-      if (rachaErr) console.error('[alumno/dashboard] racha_actividad:', rachaErr)
-      if (rachaData) setDiasRacha((rachaData as { racha_actual: number }).racha_actual ?? 0)
-    }
-
-    void fetchLogrosYRacha()
-
-    const onLogrosUpdate = () => {
-      void fetchLogrosYRacha()
-    }
+    const onLogrosUpdate = () => { void cargarLogrosYRacha(perfil.id) }
     window.addEventListener('ivs-logros-update', onLogrosUpdate)
     return () => window.removeEventListener('ivs-logros-update', onLogrosUpdate)
-  }, [perfil])
+  }, [perfil, cargarLogrosYRacha])
 
   // ── Loading skeletons ──────────────────────────────────────────────────────
   if (loading) return (
@@ -399,8 +403,11 @@ export default function AlumnoDashboard() {
             <SectionTitle>Meses del programa</SectionTitle>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3">
               {mesesDisplay.map(mes => {
-                const completado = mes.desbloqueado && mes.numero < mesActivo
-                const activo     = mes.desbloqueado && mes.numero === mesActivo
+                // La API sirve `numero` y `numero_mes`; el fallback deja la vista
+                // sana aunque el deploy de la API venga por detrás.
+                const numMes     = mes.numero ?? (mes as { numero_mes?: number }).numero_mes ?? 0
+                const completado = mes.desbloqueado && numMes < mesActivo
+                const activo     = mes.desbloqueado && numMes === mesActivo
                 const bloqueado  = !mes.desbloqueado
                 const nMat       = mes.materias?.length ?? 0
                 const subMaterias = nMat === 1 ? '1 materia' : `${nMat} materias`
@@ -408,7 +415,7 @@ export default function AlumnoDashboard() {
                 return (
                   <div
                     key={mes.id}
-                    onClick={() => mes.desbloqueado && router.push(`/alumno/mes/${mes.numero}`)}
+                    onClick={() => mes.desbloqueado && router.push(`/alumno/mes/${numMes}`)}
                     className="rounded-2xl p-4 transition-all duration-200 flex flex-col gap-1.5 min-h-[118px]"
                     style={{
                       background:  bloqueado  ? '#F8FAFB'
@@ -431,7 +438,7 @@ export default function AlumnoDashboard() {
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-3xl font-bold leading-none tabular-nums"
                         style={{ color: bloqueado ? '#C8D8E8' : completado ? '#16A34A' : '#3AAFA9' }}>
-                        {mes.numero < 10 ? `0${mes.numero}` : mes.numero}
+                        {numMes < 10 ? `0${numMes}` : numMes}
                       </span>
                       <div className="flex-shrink-0">
                         {bloqueado  && <span className="text-lg">🔒</span>}

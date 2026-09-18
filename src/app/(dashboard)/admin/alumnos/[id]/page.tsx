@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { ArrowLeft, X, Loader2, Key, Eye, EyeOff, Download, FileText, StickyNote, Save, LockOpen, Lock, CheckCircle2, CreditCard } from 'lucide-react'
+import { ArrowLeft, X, Loader2, Key, Eye, EyeOff, Download, FileText, StickyNote, Save, LockOpen, CheckCircle2, CreditCard, Undo2 } from 'lucide-react'
 import { useToast, ToastContainer } from '@/components/ui/toast'
 import { config } from '@/lib/config'
 
@@ -159,12 +159,12 @@ export default function AlumnoDetallePage() {
         body: JSON.stringify({}),
       })
       const data = await res.json()
-      if (!res.ok) { setCerrarMesError(data.error ?? 'Error al cerrar mes'); return }
+      if (!res.ok) { setCerrarMesError(data.error ?? 'Error al quitar el mes'); return }
       setModalCerrarMes(false)
-      const { mes_cerrado, materia_nombre, datos_borrados } = data
+      const { mes_quitado, materia_nombre } = data
       await cargar()
       showToast(
-        `🔒 Mes ${mes_cerrado} (${materia_nombre}) cerrado — borrados: ${datos_borrados.calificaciones} cal, ${datos_borrados.intentos} intentos, ${datos_borrados.progreso} semanas, ${datos_borrados.quizzes} quizzes`,
+        `Mes ${mes_quitado} quitado${materia_nombre ? ` (${materia_nombre})` : ''} — el avance del alumno se conserva`,
         'success'
       )
     } catch {
@@ -415,18 +415,6 @@ export default function AlumnoDetallePage() {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {alumno.meses_desbloqueados > 0 && (
-              <button
-                onClick={() => { setModalCerrarMes(true); setCerrarMesError(null) }}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                style={{ background: 'rgba(239,68,68,0.12)', color: '#EF4444', border: '1px solid rgba(239,68,68,0.25)' }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.22)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.12)' }}
-              >
-                <Lock className="w-4 h-4" />
-                Cerrar Mes {alumno.meses_desbloqueados}
-              </button>
-            )}
             {todosBloqueados ? (
               <div
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
@@ -468,6 +456,23 @@ export default function AlumnoDetallePage() {
             )
           })}
         </div>
+
+        {/* Acción secundaria, deliberadamente separada de "Abrir Mes N+1":
+            corrige el mes mal abierto, no "concluye" nada y no borra avance. */}
+        {alumno.meses_desbloqueados > 0 && (
+          <div className="flex justify-end pt-3" style={{ borderTop: '1px solid #2A2F3E' }}>
+            <button
+              onClick={() => { setModalCerrarMes(true); setCerrarMesError(null) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: 'rgba(255,255,255,0.04)', color: '#94A3B8', border: '1px solid #2A2F3E' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              Quitar último mes (Mes {alumno.meses_desbloqueados})
+            </button>
+          </div>
+        )}
       </div>
 
 
@@ -705,7 +710,7 @@ export default function AlumnoDetallePage() {
           <div className="w-full max-w-sm rounded-2xl p-6 shadow-2xl" style={CARD_STYLE}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-gray-100">
-                ⚠️ ¿Cerrar el Mes {alumno.meses_desbloqueados}?
+                ¿Quitar el Mes {alumno.meses_desbloqueados}?
               </h3>
               <button
                 onClick={() => { setModalCerrarMes(false); setCerrarMesError(null) }}
@@ -720,18 +725,15 @@ export default function AlumnoDetallePage() {
 
             <div
               className="rounded-xl p-4 mb-4 space-y-2"
-              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}
+              style={{ background: 'rgba(148,163,184,0.08)', border: '1px solid #2A2F3E' }}
             >
-              <p className="text-sm leading-relaxed" style={{ color: '#FCA5A5' }}>
-                Se <strong>REVERTIRÁ</strong> el desbloqueo del Mes {alumno.meses_desbloqueados} y se{' '}
-                <strong>BORRARÁN</strong> permanentemente las calificaciones, intentos de evaluación,
-                progreso de semanas y respuestas de quizzes del alumno de esa materia.
-              </p>
-              <p className="text-sm font-bold pt-1" style={{ color: '#EF4444' }}>
-                Esta acción NO se puede deshacer.
+              <p className="text-sm leading-relaxed" style={{ color: '#CBD5E1' }}>
+                El alumno perderá acceso al <strong>Mes {alumno.meses_desbloqueados}</strong>.
+                Su avance y sus materias acreditadas <strong>se conservan</strong>.
               </p>
               <p className="text-xs pt-1" style={{ color: '#94A3B8' }}>
-                Si el alumno paga el siguiente mes, deberá empezar la materia desde cero.
+                Al volver a abrir el mes, lo encontrará tal como lo dejó: no repite exámenes
+                ni pierde su constancia.
               </p>
             </div>
 
@@ -758,13 +760,13 @@ export default function AlumnoDetallePage() {
                 onClick={handleCerrarMes}
                 disabled={cerrandoMes}
                 className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-60 transition-all"
-                style={{ background: '#EF4444', color: '#fff' }}
-                onMouseEnter={e => { if (!cerrandoMes) e.currentTarget.style.background = '#DC2626' }}
-                onMouseLeave={e => { if (!cerrandoMes) e.currentTarget.style.background = '#EF4444' }}
+                style={{ background: '#64748B', color: '#fff' }}
+                onMouseEnter={e => { if (!cerrandoMes) e.currentTarget.style.background = '#475569' }}
+                onMouseLeave={e => { if (!cerrandoMes) e.currentTarget.style.background = '#64748B' }}
               >
                 {cerrandoMes
-                  ? <><Loader2 className="w-4 h-4 animate-spin" />Cerrando...</>
-                  : <><Lock className="w-4 h-4" />Sí, cerrar y borrar datos</>
+                  ? <><Loader2 className="w-4 h-4 animate-spin" />Quitando...</>
+                  : <><Undo2 className="w-4 h-4" />Sí, quitar el mes</>
                 }
               </button>
             </div>
