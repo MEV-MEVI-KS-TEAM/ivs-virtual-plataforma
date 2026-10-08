@@ -6,30 +6,32 @@ import { useGSAP } from '@gsap/react'
 
 gsap.registerPlugin(useGSAP)
 
+/**
+ * Quiz de refuerzo de la semana. Ronda 2 de seguridad (port de D22d-1 de la
+ * plantilla): la pregunta llega SIN la respuesta correcta ni la explicación;
+ * cada respuesta se manda al servidor, que califica, GUARDA la primera y
+ * devuelve el veredicto de ESA pregunta ({ es_correcta, explicacion }). La
+ * primera respuesta es la que cuenta (el servidor la bloquea), así que el
+ * avance sobrevive a una recarga y no hay envío final.
+ */
 interface Pregunta {
   id: string
   pregunta: string
   opciones: string[]
-  explicacion?: string   // opcional — se muestra cuando la BD lo provee
   orden: number
 }
 
-// La respuesta correcta ya no viaja en el GET: el servidor la revela por
-// pregunta al verificar (POST { pregunta_id, respuesta }).
-interface Correccion {
+/** Veredicto del servidor para una pregunta ya contestada. Nunca trae la opción correcta. */
+interface Resultado {
+  tu_respuesta: number
   es_correcta: boolean
-  respuesta_correcta: number
-}
-
-interface RespuestaPrevia {
-  respuestas: Record<string, number>
-  completado_en: string
-  correctas?: number   // score calculado server-side (GET con quiz ya contestado)
+  explicacion?: string
 }
 
 interface SemanaQuizProps {
   semanaId: string
-  alumnoId: string
+  /** Reservado; el API usa la sesión del servidor. */
+  alumnoId?: string
   lang: string
 }
 
@@ -37,17 +39,15 @@ const CARD = { background: '#181C26', border: '1px solid #2A2F3E' }
 
 export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const [preguntas, setPreguntas] = useState<Pregunta[]>([])
-  const [respuestaPrevia, setRespuestaPrevia] = useState<RespuestaPrevia | null>(null)
+  const [resultados, setResultados] = useState<Record<string, Resultado>>({})
   const [loading, setLoading] = useState(true)
+  const [errorCarga, setErrorCarga] = useState(false)
   const [currentIdx, setCurrentIdx] = useState(0)
-  const [seleccionadas, setSeleccionadas] = useState<Record<number, number>>({})
-  const [respondidas, setRespondidas] = useState<Record<number, boolean>>({})
-  const [correcciones, setCorrecciones] = useState<Record<number, Correccion>>({})
+  // Opción tocada mientras el servidor responde (solo para resaltarla en neutral).
+  const [pendiente, setPendiente] = useState<number | null>(null)
   const [verificando, setVerificando] = useState(false)
   const [errorVerif, setErrorVerif] = useState<string | null>(null)
-  const [correctasFinal, setCorrectasFinal] = useState<number | null>(null)
-  const [completado, setCompletado] = useState(false)
-  const [guardando, setGuardando] = useState(false)
+  const [verResumen, setVerResumen] = useState(false)
 
   const cardRef = useRef<HTMLDivElement>(null)
   const preguntaRef = useRef<HTMLDivElement>(null)
@@ -58,21 +58,30 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
 
   useEffect(() => {
     fetch(`/api/alumno/quiz/${semanaId}`)
-      .then(r => r.json())
+      .then(async r => {
+        if (!r.ok) throw new Error()
+        return r.json()
+      })
       .then(data => {
-        setPreguntas(data.preguntas ?? [])
-        if (data.respuesta_previa) {
-          setRespuestaPrevia(data.respuesta_previa)
-          setCompletado(true)
+        const lista: Pregunta[] = Array.isArray(data?.preguntas) ? data.preguntas : []
+        const res: Record<string, Resultado> =
+          data?.resultados && typeof data.resultados === 'object' ? data.resultados : {}
+        setPreguntas(lista)
+        setResultados(res)
+        if (data?.completado) setVerResumen(true)
+        else {
+          // Arranca en la primera pregunta sin contestar.
+          const i = lista.findIndex(p => !res[p.id])
+          if (i > 0) setCurrentIdx(i)
         }
       })
-      .catch(() => {})
+      .catch(() => setErrorCarga(true))
       .finally(() => setLoading(false))
   }, [semanaId])
 
   // Animar entrada de cada pregunta
   useGSAP(() => {
-    if (preguntaRef.current && !completado) {
+    if (preguntaRef.current && !verResumen) {
       gsap.fromTo(
         preguntaRef.current,
         { opacity: 0, x: 20 },
@@ -85,6 +94,17 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
     return (
       <div className="rounded-xl p-4 mt-2 flex items-center gap-2 text-xs" style={CARD}>
         <span style={{ color: '#94A3B8' }}>{loc('Cargando refuerzo…', 'Loading practice…')}</span>
+      </div>
+    )
+  }
+
+  if (errorCarga) {
+    return (
+      <div className="rounded-xl p-4 mt-2 text-xs leading-relaxed" style={CARD}>
+        <p role="alert" style={{ color: '#94A3B8' }}>
+          {loc('No se pudo cargar el quiz de refuerzo. Recarga la página para intentarlo de nuevo.',
+            "The practice quiz couldn't load. Reload the page to try again.")}
+        </p>
       </div>
     )
   }
@@ -107,15 +127,16 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
 
   const pregunta = preguntas[currentIdx]
   const total = preguntas.length
-  const seleccionada = seleccionadas[currentIdx]
   // Solo hay veredicto si el SERVIDOR lo dio: sin veredicto no hay rojo ni ✗.
-  const correccion = correcciones[currentIdx]
-  const yaRespondida = respondidas[currentIdx] === true && correccion !== undefined
+  const resultado = resultados[pregunta.id]
+  const yaRespondida = resultado !== undefined
+  const todasContestadas = preguntas.every(p => resultados[p.id])
 
-  // La verificación no persiste nada: reintentarla es seguro.
+  // Reintentar es seguro: el servidor guarda solo la PRIMERA respuesta de cada
+  // pregunta y, si ya la tenía, devuelve ese mismo veredicto (candado).
   // 'red' = no llegó respuesta (se reintenta una vez); 'sesion' = 401 o HTML de /login;
   // 'error' = otro 4xx (reintentar no cambia nada).
-  type Verificacion = { tipo: 'ok'; correccion: Correccion } | { tipo: 'red' | 'sesion' | 'error' }
+  type Verificacion = { tipo: 'ok'; resultado: Resultado } | { tipo: 'red' | 'sesion' | 'error' }
   const verificar = async (preguntaId: string, idx: number): Promise<Verificacion> => {
     for (let intento = 0; intento < 2; intento++) {
       const control = new AbortController()
@@ -133,7 +154,15 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
         if (res.ok) {
           const data = await res.json()
           if (typeof data?.es_correcta === 'boolean') {
-            return { tipo: 'ok', correccion: { es_correcta: data.es_correcta, respuesta_correcta: data.respuesta_correcta } }
+            return {
+              tipo: 'ok',
+              resultado: {
+                // Si ya estaba contestada, cuenta la respuesta GUARDADA, no la tocada ahora.
+                tu_respuesta: typeof data.tu_respuesta === 'number' ? data.tu_respuesta : idx,
+                es_correcta: data.es_correcta,
+                explicacion: typeof data.explicacion === 'string' ? data.explicacion : undefined,
+              },
+            }
           }
         } else if (res.status >= 400 && res.status < 500) {
           return { tipo: 'error' }
@@ -152,25 +181,19 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
     verificacionEnVuelo.current = true
     setVerificando(true)
     setErrorVerif(null)
-    setSeleccionadas(prev => ({ ...prev, [currentIdx]: idx }))
-    const preguntaIdx = currentIdx
+    setPendiente(idx)
+    const preguntaId = pregunta.id
     try {
-      const resultado = await verificar(preguntas[preguntaIdx].id, idx)
-      if (resultado.tipo === 'ok') {
-        setCorrecciones(prev => ({ ...prev, [preguntaIdx]: resultado.correccion }))
-        setRespondidas(prev => ({ ...prev, [preguntaIdx]: true }))
+      const r = await verificar(preguntaId, idx)
+      if (r.tipo === 'ok') {
+        setResultados(prev => ({ ...prev, [preguntaId]: r.resultado }))
       } else {
         // Sin veredicto la opción vuelve a neutral y el alumno puede volver a tocarla.
-        setSeleccionadas(prev => {
-          const sinEsta = { ...prev }
-          delete sinEsta[preguntaIdx]
-          return sinEsta
-        })
         setErrorVerif(
-          resultado.tipo === 'sesion'
+          r.tipo === 'sesion'
             ? loc('Tu sesión expiró. Vuelve a iniciar sesión para seguir con el quiz.',
                 'Your session expired. Sign in again to continue the quiz.')
-            : resultado.tipo === 'error'
+            : r.tipo === 'error'
               ? loc('No pudimos revisar tu respuesta. Inténtalo de nuevo en un momento.',
                   "We couldn't check your answer. Try again in a moment.")
               : loc('No pudimos revisar tu respuesta. Revisa tu conexión y vuelve a tocarla.',
@@ -180,55 +203,24 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
     } finally {
       verificacionEnVuelo.current = false
       setVerificando(false)
+      setPendiente(null)
     }
   }
 
-  const handleNext = async () => {
-    if (currentIdx < total - 1) {
-      setCurrentIdx(i => i + 1)
-    } else {
-      await handleSubmit()
-    }
+  const handleNext = () => {
+    setErrorVerif(null)
+    if (currentIdx < total - 1) setCurrentIdx(i => i + 1)
+    else if (todasContestadas) setVerResumen(true)
   }
 
   const handlePrev = () => {
+    setErrorVerif(null)
     if (currentIdx > 0) setCurrentIdx(i => i - 1)
   }
 
-  const handleSubmit = async () => {
-    setGuardando(true)
-    const respuestas: Record<string, number> = {}
-    preguntas.forEach((p, i) => {
-      if (seleccionadas[i] !== undefined) {
-        respuestas[p.id] = seleccionadas[i]
-      }
-    })
-    try {
-      const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ respuestas }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (typeof data.correctas === 'number') setCorrectasFinal(data.correctas)
-      }
-      setRespuestaPrevia({ respuestas, completado_en: new Date().toISOString() })
-      setCompletado(true)
-    } catch {
-      // silencioso — no bloquear al alumno
-    } finally {
-      setGuardando(false)
-    }
-  }
-
-  // Vista de resultados (quiz completado) — score calificado server-side:
-  // del POST recién enviado, del GET (quiz previo) o de las verificaciones por pregunta.
-  if (completado) {
-    const correct =
-      correctasFinal ??
-      respuestaPrevia?.correctas ??
-      Object.values(correcciones).filter(c => c.es_correcta).length
+  // Vista de resultados (quiz completado): el conteo sale de los veredictos del servidor.
+  if (verResumen) {
+    const correct = preguntas.filter(p => resultados[p.id]?.es_correcta).length
 
     return (
       <div className="rounded-xl p-5 space-y-3 mt-2" style={CARD}>
@@ -255,6 +247,15 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
               {loc(`¡${correct} de ${total} correctas!`, `${correct} out of ${total} correct!`)}
             </p>
           </div>
+        </div>
+        <div className="flex justify-center">
+          <button
+            onClick={() => { setVerResumen(false); setCurrentIdx(0) }}
+            className="px-3 py-1.5 text-xs rounded-lg"
+            style={{ border: '1px solid #2A2F3E', color: '#94A3B8', background: 'transparent' }}
+          >
+            {loc('Repasar respuestas', 'Review answers')}
+          </button>
         </div>
       </div>
     )
@@ -295,16 +296,18 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
         </p>
 
         <div className="space-y-2" aria-busy={verificando}>
-          {(pregunta.opciones as string[]).map((opcion, i) => {
-            const esSeleccionada = seleccionada === i
+          {pregunta.opciones.map((opcion, i) => {
+            // Con veredicto: la opción que cuenta es la GUARDADA por el servidor.
+            const esSeleccionada = yaRespondida ? resultado.tu_respuesta === i : pendiente === i
             // El color sale del veredicto del servidor, no de comparar índices.
-            const esCorrecta = correccion?.es_correcta === true
+            const esCorrecta = resultado?.es_correcta === true
 
             let bg = 'rgba(255,255,255,0.03)'
             let borderColor = '#2A2F3E'
             let textColor = '#94A3B8'
 
-            // Solo estilizar la opción que eligió el alumno (no “revelar” la correcta sola).
+            // Solo estilizar la opción que eligió el alumno (la correcta no se
+            // revela: el servidor ni siquiera la manda).
             if (yaRespondida) {
               if (esSeleccionada) {
                 if (esCorrecta) {
@@ -359,28 +362,22 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
           <p role="alert" className="text-xs" style={{ color: '#FCD34D' }}>{errorVerif}</p>
         )}
 
-        {/* Retroalimentación inmediata (calificada server-side) */}
+        {/* Retroalimentación: el veredicto del servidor, solo de esta pregunta */}
         {yaRespondida && (
           <div
             className="px-4 py-3 rounded-lg text-sm leading-relaxed"
             style={{
-              background: correcciones[currentIdx]?.es_correcta
-                ? 'rgba(16,185,129,0.08)'
-                : 'rgba(239,68,68,0.08)',
-              border: `1px solid ${correcciones[currentIdx]?.es_correcta
-                ? 'rgba(16,185,129,0.25)'
-                : 'rgba(239,68,68,0.25)'}`,
+              background: resultado.es_correcta ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${resultado.es_correcta ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
               color: '#CBD5E1',
             }}
           >
-            <span className="font-semibold mr-1">
-              {correcciones[currentIdx]?.es_correcta ? '✓' : '✗'}
-            </span>
-            {pregunta.explicacion
-              ? pregunta.explicacion
-              : correcciones[currentIdx]?.es_correcta
-                ? '¡Correcto!'
-                : 'Incorrecto'}
+            <span className="font-semibold mr-1">{resultado.es_correcta ? '✓' : '✗'}</span>
+            {resultado.explicacion
+              ? resultado.explicacion
+              : resultado.es_correcta
+                ? loc('¡Correcto!', 'Correct!')
+                : loc('Incorrecto', 'Incorrect')}
           </div>
         )}
       </div>
@@ -396,18 +393,15 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
           ← {loc('Anterior', 'Previous')}
         </button>
 
-        {yaRespondida && (
+        {yaRespondida && (currentIdx < total - 1 || todasContestadas) && (
           <button
             onClick={handleNext}
-            disabled={guardando}
-            className="px-4 py-1.5 text-xs rounded-lg font-semibold transition-all disabled:opacity-60"
+            className="px-4 py-1.5 text-xs rounded-lg font-semibold transition-all"
             style={{ background: '#6366F1', color: '#fff', border: 'none' }}
           >
-            {guardando
-              ? '...'
-              : currentIdx === total - 1
-                ? loc('Ver resultado →', 'See results →')
-                : loc('Siguiente →', 'Next →')}
+            {currentIdx === total - 1
+              ? loc('Ver resultado →', 'See results →')
+              : loc('Siguiente →', 'Next →')}
           </button>
         )}
       </div>

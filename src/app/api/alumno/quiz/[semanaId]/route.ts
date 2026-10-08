@@ -1,101 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { cargarContextoAcceso, tieneAccesoMateria } from '@/lib/acceso-materias'
+import {
+  indiceRespuesta,
+  letraDeIndice,
+  opcionesQuiz,
+  preguntaPublica,
+  primerasRespuestas,
+  veredictoQuiz,
+  type QuizSemanaRow,
+  type ResultadoQuiz,
+} from '@/lib/quiz/quiz-semana'
 
 /**
  * Quiz por semana. Acceso gateado por pertenencia de la semana a una materia
  * accesible para el alumno (semana → mes_id → meses_contenido → materia, y el
- * criterio canon de lib/acceso-materias). La respuesta correcta NUNCA viaja en
- * el GET: la calificación ocurre server-side en el POST (modo verificación por
- * pregunta o calificación del quiz completo al guardarlo).
+ * criterio canon de lib/acceso-materias).
  *
- * Se usa select('*') sobre quiz_semana para incluir filas con solo `opciones`
- * (JSONB) o solo opcion_a/b/c; un select fijo sin `opciones` dejaba preguntas
- * vacías en sec/prepa.
+ * Ronda 2 de seguridad (port de D22d-1 de la plantilla, K-d1):
+ *   * GET  → preguntas por LISTA BLANCA (sin clave ni explicación) + el
+ *            veredicto de las que el alumno YA contestó (su primera respuesta,
+ *            recalculada contra la clave).
+ *   * POST { pregunta_id, respuesta } → califica UNA pregunta en el servidor y
+ *            PERSISTE la primera respuesta (candado: si ya la contestó, devuelve
+ *            ese veredicto y no escribe). Devuelve { tu_respuesta, es_correcta,
+ *            explicacion? }: nunca la opción correcta.
+ *   * POST { respuestas } → compatibilidad con el bundle anterior (una versión).
+ * Banco y respuestas con el service role DESPUÉS del gate: la migración de
+ * seguridad deja al alumno sin lectura de la clave/explicación de quiz_semana y
+ * sin escritura de quiz_respuestas por /rest/v1.
  */
-
-/** Fila cruda de quiz_semana (schema usa columnas opcion_a/b/c/d en lugar de array — compatibilidad histórica) */
-type QuizSemanaRow = {
-  id: string
-  semana_id?: string
-  pregunta: string
-  orden: number | null
-  opciones?: unknown
-  respuesta_correcta?: unknown
-  explicacion?: string | null
-  opcion_a?: string | null
-  opcion_b?: string | null
-  opcion_c?: string | null
-  opcion_d?: string | null
-}
-
-function letterToIndex(letter: string): number {
-  const c = letter.trim().toLowerCase()
-  if (c === 'a') return 0
-  if (c === 'b') return 1
-  if (c === 'c') return 2
-  if (c === 'd') return 3
-  return 0
-}
-
-/** Índice 0..3: acepta letra a/b/c/d, número 0–3 o string "0".."3". */
-function respuestaCorrectaToIndex(rc: unknown): number {
-  if (typeof rc === 'number' && Number.isFinite(rc)) {
-    const n = Math.trunc(rc)
-    if (n >= 0 && n <= 3) return n
-  }
-  const s = String(rc ?? 'a').trim().toLowerCase()
-  if (s === '0' || s === 'a') return 0
-  if (s === '1' || s === 'b') return 1
-  if (s === '2' || s === 'c') return 2
-  if (s === '3' || s === 'd') return 3
-  return letterToIndex(s)
-}
-
-/** Normaliza a la forma que consume `SemanaQuiz` */
-function mapQuizSemanaRow(row: QuizSemanaRow) {
-  const id = row.id
-  const pregunta = row.pregunta ?? ''
-  const orden = row.orden ?? 0
-  const explicacionRaw = row.explicacion
-  const explicacion =
-    typeof explicacionRaw === 'string' && explicacionRaw.trim() !== ''
-      ? explicacionRaw.trim()
-      : undefined
-
-  if (row.opcion_a != null && row.opcion_b != null && row.opcion_c != null) {
-    // opcion_d es opcional (preguntas legacy de 3 opciones); filter(Boolean) elimina null/undefined
-    const opciones = [row.opcion_a, row.opcion_b, row.opcion_c, row.opcion_d]
-      .filter((o): o is string => o != null && o !== '')
-      .map(String)
-    return {
-      id,
-      pregunta,
-      opciones,
-      respuesta_correcta: respuestaCorrectaToIndex(row.respuesta_correcta),
-      explicacion,
-      orden,
-    }
-  }
-
-  if (Array.isArray(row.opciones)) {
-    const opciones = row.opciones.map(String)
-    const rc = row.respuesta_correcta
-    const respuesta_correcta =
-      typeof rc === 'number' && rc >= 0 && rc <= 3 ? rc : respuestaCorrectaToIndex(rc)
-    return {
-      id,
-      pregunta,
-      opciones,
-      respuesta_correcta,
-      explicacion,
-      orden,
-    }
-  }
-
-  return null
-}
 
 type AccesoQuiz =
   | { ok: true }
@@ -152,125 +88,68 @@ async function verificarAccesoQuiz(
   return { ok: true }
 }
 
-async function fetchRespuestaPreviaJsonb(
-  supabase: SupabaseClient,
+/**
+ * Respuestas ya guardadas del alumno (forma legacy de IVS: una fila por
+ * pregunta con la letra), con el service role, ordenadas por fecha: la PRIMERA
+ * de cada pregunta es la que cuenta (candado).
+ */
+async function leerPrimerasRespuestas(
+  admin: SupabaseClient,
   alumnoId: string,
-  semanaId: string
-): Promise<{ respuestas: Record<string, number>; completado_en: string } | null> {
-  const { data, error } = await supabase
-    .from('quiz_respuestas')
-    .select('respuestas, completado_en')
-    .eq('alumno_id', alumnoId)
-    .eq('semana_id', semanaId)
-    .maybeSingle()
-
-  // Tabla legacy sin semana_id/respuestas → PostgREST devuelve error; seguir con filas por quiz_id
-  if (error) return null
-  if (!data?.respuestas || typeof data.respuestas !== 'object') return null
-  return {
-    respuestas: data.respuestas as Record<string, number>,
-    completado_en: (data.completado_en as string) ?? new Date().toISOString(),
-  }
-}
-
-async function fetchRespuestaPreviaLegacy(
-  supabase: SupabaseClient,
-  alumnoId: string,
-  preguntaIds: string[]
-): Promise<{ respuestas: Record<string, number>; completado_en: string } | null> {
-  if (preguntaIds.length === 0) return null
-
-  const { data: answers, error } = await supabase
+  filas: QuizSemanaRow[],
+): Promise<Record<string, number>> {
+  if (filas.length === 0) return {}
+  const { data, error } = await admin
     .from('quiz_respuestas')
     .select('quiz_id, respuesta, fecha')
     .eq('alumno_id', alumnoId)
-    .in('quiz_id', preguntaIds)
-    .order('fecha', { ascending: false })
-
-  if (error || !answers?.length) return null
-
-  const latest = new Map<string, { respuesta: string; fecha: string }>()
-  for (const a of answers) {
-    const qid = a.quiz_id as string
-    if (!latest.has(qid)) {
-      latest.set(qid, {
-        respuesta: String((a as { respuesta?: string }).respuesta ?? 'a'),
-        fecha: String((a as { fecha?: string }).fecha ?? ''),
-      })
-    }
-  }
-
-  if (latest.size !== preguntaIds.length) return null
-
-  const respuestas: Record<string, number> = {}
-  let completado_en = ''
-  for (const id of preguntaIds) {
-    const row = latest.get(id)
-    if (!row) return null
-    respuestas[id] = letterToIndex(row.respuesta)
-    if (row.fecha > completado_en) completado_en = row.fecha
-  }
-
-  return { respuestas, completado_en }
+    .in('quiz_id', filas.map(f => f.id))
+    .order('fecha', { ascending: true })
+  if (error) throw new Error(error.message)
+  return primerasRespuestas(filas, (data ?? []) as { quiz_id: string; respuesta: unknown }[])
 }
 
-async function saveRespuestasJsonb(
-  supabase: SupabaseClient,
+/** Inserta respuestas NUEVAS (las ya contestadas nunca se reemplazan). */
+async function guardarRespuestas(
+  admin: SupabaseClient,
   alumnoId: string,
-  semanaId: string,
-  respuestas: Record<string, number>
-) {
-  return supabase.from('quiz_respuestas').upsert(
-    {
+  nuevas: { fila: QuizSemanaRow; idx: number }[],
+): Promise<{ error: { code?: string; message: string } | null }> {
+  if (nuevas.length === 0) return { error: null }
+  const { error } = await admin.from('quiz_respuestas').insert(
+    nuevas.map(n => ({
       alumno_id: alumnoId,
-      semana_id: semanaId,
-      respuestas,
-      completado_en: new Date().toISOString(),
-    },
-    { onConflict: 'alumno_id,semana_id', ignoreDuplicates: false }
+      quiz_id: n.fila.id,
+      respuesta: letraDeIndice(n.fila, n.idx),
+      // Informativo: el veredicto se RECALCULA siempre contra la clave al leer.
+      correcta: veredictoQuiz(n.fila, n.idx).es_correcta,
+    })),
   )
+  return { error: error ? { code: error.code, message: error.message } : null }
 }
 
+/** Sesión + gate de la semana. Devuelve la respuesta de error o el alumno. */
+async function autorizar(semanaIdCrudo: unknown) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: NextResponse.json({ error: 'No autorizado' }, { status: 401 }) }
 
-async function saveRespuestasLegacy(
-  supabase: SupabaseClient,
-  alumnoId: string,
-  respuestas: Record<string, number>
-) {
-  const ids = Object.keys(respuestas)
-  if (ids.length === 0) return { error: null as null }
+  const semanaId = typeof semanaIdCrudo === 'string' ? semanaIdCrudo.trim() : ''
+  if (!semanaId) return { error: NextResponse.json({ error: 'semanaId requerido' }, { status: 400 }) }
 
-  const { data: rows, error: qErr } = await supabase
+  const acceso = await verificarAccesoQuiz(supabase, user.id, semanaId)
+  if (!acceso.ok) return { error: NextResponse.json({ error: acceso.error }, { status: acceso.status }) }
+
+  // alumnos.id = user.id (existencia verificada en el gate)
+  return { alumnoId: user.id, semanaId }
+}
+
+async function leerFilasSemana(admin: SupabaseClient, semanaId: string) {
+  return admin
     .from('quiz_semana')
-    .select('id, respuesta_correcta')
-    .in('id', ids)
-
-  if (qErr || !rows?.length) return { error: qErr ?? new Error('Sin preguntas') }
-
-  const expected = new Map(
-    rows.map(r => {
-      const rc = (r as { respuesta_correcta?: unknown }).respuesta_correcta
-      const letter =
-        typeof rc === 'number'
-          ? String.fromCharCode(97 + (rc as number))
-          : String(rc ?? 'a').toLowerCase().slice(0, 1)
-      return [r.id as string, letter]
-    })
-  )
-
-  const inserts = ids.map(quizId => {
-    const idx = respuestas[quizId] ?? 0
-    const letter = String.fromCharCode(97 + Math.min(3, Math.max(0, idx)))
-    const exp = expected.get(quizId) ?? 'a'
-    return {
-      alumno_id: alumnoId,
-      quiz_id: quizId,
-      respuesta: letter,
-      correcta: letter === exp,
-    }
-  })
-
-  return supabase.from('quiz_respuestas').insert(inserts)
+    .select('*')
+    .eq('semana_id', semanaId)
+    .order('orden', { ascending: true })
 }
 
 export async function GET(
@@ -278,68 +157,38 @@ export async function GET(
   { params }: { params: { semanaId: string } }
 ) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    const a = await autorizar(params?.semanaId)
+    if ('error' in a) return a.error
+    const { alumnoId, semanaId } = a
 
-    const semanaId = typeof params?.semanaId === 'string' ? params.semanaId.trim() : ''
-    if (!semanaId) {
-      return NextResponse.json({ error: 'semanaId requerido' }, { status: 400 })
-    }
-
-    const acceso = await verificarAccesoQuiz(supabase, user.id, semanaId)
-    if (!acceso.ok) {
-      return NextResponse.json({ error: acceso.error }, { status: acceso.status })
-    }
-
-    const { data: rawRows, error: quizErr } = await supabase
-      .from('quiz_semana')
-      .select('*')
-      .eq('semana_id', semanaId)
-      .order('orden', { ascending: true })
-
+    // Banco y respuestas con el service role DESPUÉS del gate: la migración de
+    // seguridad le quita al alumno la lectura de quiz_semana.respuesta_correcta
+    // y quiz_semana.explicacion por /rest/v1.
+    const admin = createAdminClient()
+    const { data: rawRows, error: quizErr } = await leerFilasSemana(admin, semanaId)
     if (quizErr) {
       console.error('[quiz GET] quiz_semana', quizErr)
       return NextResponse.json({ error: 'Error al cargar preguntas' }, { status: 500 })
     }
 
-    const preguntas = (rawRows as QuizSemanaRow[] | null)
-      ?.map(mapQuizSemanaRow)
-      .filter((p): p is NonNullable<typeof p> => p != null) ?? []
+    const filas = ((rawRows ?? []) as QuizSemanaRow[]).filter(f => preguntaPublica(f) !== null)
+    const preguntas = filas.map(f => preguntaPublica(f)!)
+    const respuestas = await leerPrimerasRespuestas(admin, alumnoId, filas)
 
-    const alumnoId = user.id // alumnos.id = user.id (existencia verificada en el gate)
-
-    const respuestaPrevia =
-      (await fetchRespuestaPreviaJsonb(supabase, alumnoId, semanaId)) ??
-      (await fetchRespuestaPreviaLegacy(
-        supabase,
-        alumnoId,
-        preguntas.map(p => p.id)
-      ))
-
-    // La respuesta correcta no viaja al cliente: solo el POST califica.
-    const preguntasPublicas = preguntas.map(p => ({
-      id: p.id,
-      pregunta: p.pregunta,
-      opciones: p.opciones,
-      explicacion: p.explicacion,
-      orden: p.orden,
-    }))
-
-    // Quiz ya contestado: incluir el score calculado server-side.
-    const respuestaPreviaConScore = respuestaPrevia
-      ? {
-          ...respuestaPrevia,
-          correctas: preguntas.reduce(
-            (acc, p) => acc + ((respuestaPrevia.respuestas[p.id] ?? -1) === p.respuesta_correcta ? 1 : 0),
-            0
-          ),
-        }
-      : null
-
+    // El veredicto (y la explicación) SOLO de lo ya contestado.
+    const resultados: Record<string, ResultadoQuiz> = {}
+    for (const f of filas) {
+      const idx = respuestas[f.id]
+      if (idx !== undefined) resultados[f.id] = veredictoQuiz(f, idx)
+    }
+    const total = preguntas.length
+    const contestadas = Object.keys(resultados).length
     return NextResponse.json({
-      preguntas: preguntasPublicas,
-      respuesta_previa: respuestaPreviaConScore,
+      preguntas,
+      resultados,
+      completado: total > 0 && contestadas === total,
+      aciertos: Object.values(resultados).filter(r => r.es_correcta).length,
+      total,
     })
   } catch (e) {
     console.error('[quiz GET]', e)
@@ -352,111 +201,88 @@ export async function POST(
   { params }: { params: { semanaId: string } }
 ) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    const body = (await request.json().catch(() => null)) as
+      | { pregunta_id?: unknown; respuesta?: unknown; respuestas?: unknown }
+      | null
 
-    const semanaId = typeof params?.semanaId === 'string' ? params.semanaId.trim() : ''
-    if (!semanaId) {
-      return NextResponse.json({ error: 'semanaId requerido' }, { status: 400 })
-    }
+    // Mismo gate que el GET: guardar respuestas de una semana bloqueada
+    // dejaría el hueco vivo por POST directo.
+    const a = await autorizar(params?.semanaId)
+    if ('error' in a) return a.error
+    const { alumnoId, semanaId } = a
+    const admin = createAdminClient()
 
-    const acceso = await verificarAccesoQuiz(supabase, user.id, semanaId)
-    if (!acceso.ok) {
-      return NextResponse.json({ error: acceso.error }, { status: acceso.status })
-    }
-
-    const body = await request.json()
-    const alumnoId = user.id // alumnos.id = user.id (existencia verificada en el gate)
-
-    // ── Modo verificación por pregunta (feedback inmediato, no persiste) ─────
-    const preguntaId = (body as { pregunta_id?: unknown })?.pregunta_id
-    if (typeof preguntaId === 'string' && preguntaId !== '') {
-      const idx = Number((body as { respuesta?: unknown }).respuesta)
-      if (!Number.isInteger(idx) || idx < 0 || idx > 3) {
-        return NextResponse.json({ error: 'respuesta inválida' }, { status: 400 })
-      }
-
-      const { data: filaPregunta } = await supabase
+    // ── UNA pregunta: califica, guarda la PRIMERA respuesta y devuelve el
+    //    veredicto { es_correcta, explicacion } de ESA pregunta ─────────────
+    if (body && typeof body.pregunta_id === 'string' && body.pregunta_id !== '') {
+      // Con filtro de semana: un id de otra semana (o de una bloqueada) no pasa.
+      const { data: fila, error } = await admin
         .from('quiz_semana')
         .select('*')
-        .eq('id', preguntaId)
+        .eq('id', body.pregunta_id)
         .eq('semana_id', semanaId)
         .maybeSingle()
+      if (error) return NextResponse.json({ error: 'Error al leer la pregunta' }, { status: 500 })
+      if (!fila) return NextResponse.json({ error: 'La pregunta no es de esta semana.' }, { status: 400 })
+      const row = fila as QuizSemanaRow
+      const opciones = opcionesQuiz(row)
+      const idx = opciones ? indiceRespuesta(body.respuesta, opciones.length) : null
+      if (idx === null) return NextResponse.json({ error: 'Respuesta inválida.' }, { status: 400 })
 
-      const mapped = filaPregunta ? mapQuizSemanaRow(filaPregunta as QuizSemanaRow) : null
-      if (!mapped) {
-        return NextResponse.json({ error: 'Pregunta no encontrada' }, { status: 404 })
+      // Candado: la primera respuesta es la que cuenta.
+      const previas = await leerPrimerasRespuestas(admin, alumnoId, [row])
+      if (previas[row.id] !== undefined) {
+        return NextResponse.json({ ...veredictoQuiz(row, previas[row.id]), ya_respondida: true })
       }
-
-      return NextResponse.json({
-        es_correcta: idx === mapped.respuesta_correcta,
-        respuesta_correcta: mapped.respuesta_correcta,
-      })
+      const g = await guardarRespuestas(admin, alumnoId, [{ fila: row, idx }])
+      if (g.error) {
+        // 23505 = índice único (alumno, quiz_id) de la migración de seguridad:
+        // otro toque ganó la carrera; manda el veredicto de la respuesta guardada.
+        if (g.error.code === '23505') {
+          const ganadora = await leerPrimerasRespuestas(admin, alumnoId, [row])
+          if (ganadora[row.id] !== undefined) {
+            return NextResponse.json({ ...veredictoQuiz(row, ganadora[row.id]), ya_respondida: true })
+          }
+        }
+        console.error('[quiz POST] guardar', g.error)
+        return NextResponse.json({ error: 'Error al guardar tu respuesta' }, { status: 500 })
+      }
+      return NextResponse.json(veredictoQuiz(row, idx))
     }
 
-    // ── Modo quiz completo: calificar server-side y guardar ──────────────────
-    const { respuestas } = body as { respuestas: Record<string, number> }
-
-    if (!respuestas || typeof respuestas !== 'object') {
-      return NextResponse.json({ error: 'respuestas requeridas' }, { status: 400 })
+    // ── Compatibilidad (una versión): el bundle anterior manda todo junto al
+    //    final. Todo o nada, con service role; lo ya contestado no se toca. ──
+    if (body && body.respuestas && typeof body.respuestas === 'object' && !Array.isArray(body.respuestas)) {
+      const enviadas = body.respuestas as Record<string, unknown>
+      const ids = Object.keys(enviadas)
+      const { data: rawRows, error } = await leerFilasSemana(admin, semanaId)
+      if (error) return NextResponse.json({ error: 'Error al leer las preguntas' }, { status: 500 })
+      const filas = ((rawRows ?? []) as QuizSemanaRow[]).filter(f => preguntaPublica(f) !== null)
+      const porId = new Map(filas.map(f => [f.id, f]))
+      const validas: { fila: QuizSemanaRow; idx: number }[] = []
+      for (const id of ids) {
+        const fila = porId.get(id)
+        const opciones = fila ? opcionesQuiz(fila) : null
+        const idx = fila && opciones ? indiceRespuesta(enviadas[id], opciones.length) : null
+        // Un id ajeno o un índice inválido rechaza el envío completo.
+        if (!fila || idx === null) {
+          return NextResponse.json({ error: 'Respuestas inválidas.' }, { status: 400 })
+        }
+        validas.push({ fila, idx })
+      }
+      const previas = await leerPrimerasRespuestas(admin, alumnoId, filas)
+      const nuevas = validas.filter(v => previas[v.fila.id] === undefined)
+      const g = await guardarRespuestas(admin, alumnoId, nuevas)
+      if (g.error && g.error.code !== '23505') {
+        console.error('[quiz POST] guardar (compat)', g.error)
+        return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
+      }
+      const finales = await leerPrimerasRespuestas(admin, alumnoId, filas)
+      const correctas = filas.filter(f => finales[f.id] !== undefined && veredictoQuiz(f, finales[f.id]).es_correcta).length
+      return NextResponse.json({ ok: true, correctas, total: filas.length })
     }
 
-    const { data: rawRows, error: quizErr } = await supabase
-      .from('quiz_semana')
-      .select('*')
-      .eq('semana_id', semanaId)
-      .order('orden', { ascending: true })
-
-    if (quizErr) {
-      console.error('[quiz POST] quiz_semana', quizErr)
-      return NextResponse.json({ error: 'Error al calificar' }, { status: 500 })
-    }
-
-    const preguntas = (rawRows as QuizSemanaRow[] | null)
-      ?.map(mapQuizSemanaRow)
-      .filter((p): p is NonNullable<typeof p> => p != null) ?? []
-
-    let correctas = 0
-    const porPregunta: Record<string, boolean> = {}
-    for (const p of preguntas) {
-      const esCorrecta = (respuestas[p.id] ?? -1) === p.respuesta_correcta
-      porPregunta[p.id] = esCorrecta
-      if (esCorrecta) correctas++
-    }
-
-    const resultado = {
-      ok: true,
-      correctas,
-      total: preguntas.length,
-      por_pregunta: porPregunta,
-    }
-
-    const jsonb = await saveRespuestasJsonb(supabase, alumnoId, semanaId, respuestas)
-    if (!jsonb.error) {
-      return NextResponse.json(resultado)
-    }
-
-    const msg = (jsonb.error.message ?? '').toLowerCase()
-    const isSchemaMismatch =
-      msg.includes('semana_id') ||
-      msg.includes('respuestas') ||
-      msg.includes('column') ||
-      jsonb.error.code === 'PGRST204' ||
-      jsonb.error.code === '42703'
-
-    if (!isSchemaMismatch) {
-      console.error('[quiz POST] upsert jsonb', jsonb.error)
-      return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
-    }
-
-    const legacy = await saveRespuestasLegacy(supabase, alumnoId, respuestas)
-    if (legacy.error) {
-      console.error('[quiz POST] insert legacy', legacy.error)
-      return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
-    }
-
-    return NextResponse.json(resultado)
+    return NextResponse.json({ error: 'respuestas requeridas' }, { status: 400 })
   } catch (e) {
     console.error('[quiz POST]', e)
     return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })
