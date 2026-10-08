@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { cargarContextoAcceso, dentroDeVentana } from '@/lib/acceso-materias'
+import {
+  estadoExamen,
+  leerPreguntasEvaluacion,
+  sanitizarPreguntaEvaluacion,
+} from '@/lib/evaluaciones/examen-mensual'
 
 export async function GET(
   _request: NextRequest,
@@ -84,43 +90,29 @@ export async function GET(
       }
     }
 
-    // Contar intentos
-    const { count: intentosUsados } = await supabase
+    // Ronda 2 (port de D22d-1): intentos y preguntas con el service role,
+    // DESPUÉS del gate. La clave nunca sale de aquí (lista blanca de
+    // lib/evaluaciones/examen-mensual); la migración de seguridad deja al
+    // alumno sin lectura de preguntas.respuesta_correcta por /rest/v1.
+    const admin = createAdminClient()
+    const { data: previos, error: prevErr } = await admin
       .from('intentos_evaluacion')
-      .select('id', { count: 'exact', head: true })
+      .select('acreditado')
       .eq('alumno_id', alumno.id)
       .eq('evaluacion_id', params.id)
+    if (prevErr) return NextResponse.json({ error: 'Error al leer tus intentos' }, { status: 500 })
 
-    // FIX #4: preguntas con schema IVS — opcion_a/b/c/d + orden + pregunta
-    const { data: rawPreguntas, error: pregError } = await supabase
-      .from('preguntas')
-      .select('id, orden, pregunta, opcion_a, opcion_b, opcion_c, opcion_d')
-      .eq('evaluacion_id', params.id)
-      .order('orden')
+    const usados = (previos ?? []).length
+    // Aprobar CIERRA el examen; sin intentos, también. Cerrado no se sirve el
+    // banco: no hay nada que contestar.
+    const estado = estadoExamen((previos ?? []) as { acreditado: boolean | null }[], ev.intentos_permitidos)
 
-    if (pregError) return NextResponse.json({ error: pregError.message }, { status: 500 })
-
-    type PregRow = {
-      id: string; orden: number | null; pregunta: string
-      opcion_a: string; opcion_b: string; opcion_c: string; opcion_d: string | null
+    let preguntas: ReturnType<typeof sanitizarPreguntaEvaluacion>[] = []
+    if (estado === 'abierta') {
+      const leidas = await leerPreguntasEvaluacion(admin, params.id)
+      if (leidas.error) return NextResponse.json({ error: 'Error al cargar el examen' }, { status: 500 })
+      preguntas = leidas.preguntas.map(sanitizarPreguntaEvaluacion)
     }
-
-    const pregs = (rawPreguntas ?? []) as unknown as PregRow[]
-
-    // Mapeo a formato legacy esperado por el frontend (sin exponer respuesta_correcta)
-    const preguntasLegacy = pregs.map(p => {
-      const opciones = [p.opcion_a, p.opcion_b, p.opcion_c, p.opcion_d].filter(Boolean) as string[]
-      return {
-        id:          p.id,
-        numero:      p.orden ?? 0,
-        texto:       p.pregunta,
-        texto_en:    p.pregunta,
-        tipo:        'opcion_multiple',
-        opciones,
-        opciones_en: opciones,
-        puntos:      1,
-      }
-    })
 
     return NextResponse.json({
       evaluacion: {
@@ -130,8 +122,9 @@ export async function GET(
         tipo:         'opcion_multiple',
         intentos_max: ev.intentos_permitidos,
       },
-      intentos_usados: intentosUsados ?? 0,
-      preguntas: preguntasLegacy,
+      intentos_usados: usados,
+      estado,
+      preguntas,
     })
   } catch {
     return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })
