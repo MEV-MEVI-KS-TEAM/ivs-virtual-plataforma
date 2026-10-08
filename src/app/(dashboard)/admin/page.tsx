@@ -84,11 +84,15 @@ export default async function AdminDashboardPage() {
     .select('*', { count: 'exact', head: true })
     .gte('created_at', inicioMes.toISOString())
 
-  // Documentos pendientes (tabla IVS: documentos_alumno + verificado)
+  // Documentos pendientes de revisión: cuenta por `estado` (la fuente de verdad
+  // que pintan /admin/documentos y el expediente), NO por `verificado`. En IVS
+  // `verificado` se desfasó (aprobados con verificado=false; un re-subido
+  // vuelve a estado='pendiente' pero el POST no toca verificado) y además
+  // contaba los rechazados como pendientes.
   const { count: docsPendientes } = await supabase
     .from('documentos_alumno')
     .select('*', { count: 'exact', head: true })
-    .eq('verificado', false)
+    .eq('estado', 'pendiente')
 
   // Últimos 5 alumnos
   const { data: recientes } = await supabase

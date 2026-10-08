@@ -38,7 +38,7 @@ export async function GET() {
       admin
         .from('documentos_alumno')
         .select('*', { count: 'exact', head: true })
-        .eq('verificado', false),
+        .eq('estado', 'pendiente'), // por estado, igual que el dashboard (ver admin/page.tsx)
     ])
 
     return NextResponse.json({

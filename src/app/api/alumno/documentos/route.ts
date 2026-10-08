@@ -36,9 +36,9 @@ export async function GET() {
     // que es justo lo que un instituto de diplomados no acredita.
     // Aditivo: en tradicional ningún camino crea nivel='diplomado'.
     // Licenciatura: cae en la MISMA lista que prepa (los tipos de documento son
-    // los mismos slots), pero se etiqueta aparte para que la pantalla pida
-    // «Certificado de Bachillerato» y no «de Secundaria» — que es el nivel que
-    // el aspirante a licenciatura ya acreditó.
+    // los mismos slots). OJO IVS: hoy solo hay alumnos 'preparatoria' y
+    // 'secundaria', y /alumno/documentos solo distingue «contiene ecundaria»:
+    // Diplomado/Licenciatura ven la lista de prepa (no hay etiqueta propia).
     const plan_nombre = a.nivel === 'secundaria'   ? 'Secundaria'
                       : a.nivel === 'diplomado'    ? 'Diplomado'
                       : a.nivel === 'licenciatura' ? 'Licenciatura'
