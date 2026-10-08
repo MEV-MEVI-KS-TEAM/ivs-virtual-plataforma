@@ -103,7 +103,9 @@ export async function PATCH(
 
     const admin = createAdminClient()
     // aprobado ⇒ verificado=true (ver buildDocEstadoUpdates): híbrido → nuevo → legacy
-    let error: { message: string } | null = null
+    // Solo se pasa al siguiente payload si la columna no existe en este esquema (42703 / PGRST204);
+    // cualquier otro error se devuelve tal cual, sin taparlo con el del payload legacy.
+    let error: { message: string; code?: string } | null = null
     for (const payload of ordenDocEstadoUpdates(buildDocEstadoUpdates(estado, comentario ?? null))) {
       const r = await admin
         .from('documentos_alumno')
@@ -112,6 +114,7 @@ export async function PATCH(
         .eq('alumno_id', params.id)
       error = r.error
       if (!error) break
+      if (error.code !== '42703' && error.code !== 'PGRST204') break
     }
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
