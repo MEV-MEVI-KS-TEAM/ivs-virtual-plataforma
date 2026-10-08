@@ -44,6 +44,7 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const [respondidas, setRespondidas] = useState<Record<number, boolean>>({})
   const [correcciones, setCorrecciones] = useState<Record<number, Correccion>>({})
   const [verificando, setVerificando] = useState(false)
+  const [errorVerif, setErrorVerif] = useState<string | null>(null)
   const [correctasFinal, setCorrectasFinal] = useState<number | null>(null)
   const [completado, setCompletado] = useState(false)
   const [guardando, setGuardando] = useState(false)
@@ -105,35 +106,57 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const pregunta = preguntas[currentIdx]
   const total = preguntas.length
   const seleccionada = seleccionadas[currentIdx]
-  const yaRespondida = respondidas[currentIdx] === true
+  // Solo hay veredicto si el SERVIDOR lo dio: sin veredicto no hay rojo ni ✗.
+  const correccion = correcciones[currentIdx]
+  const yaRespondida = respondidas[currentIdx] === true && correccion !== undefined
+
+  // La verificación no persiste nada: reintentarla es seguro.
+  const verificar = async (preguntaId: string, idx: number): Promise<Correccion | null> => {
+    for (let intento = 0; intento < 2; intento++) {
+      try {
+        const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pregunta_id: preguntaId, respuesta: idx }),
+        })
+        // Un redirect a /login (sesión vencida) llega como HTML con 200: no es veredicto.
+        const ct = res.headers.get('content-type') ?? ''
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json()
+          if (typeof data?.es_correcta === 'boolean') {
+            return { es_correcta: data.es_correcta, respuesta_correcta: data.respuesta_correcta }
+          }
+        }
+      } catch {
+        // red caída o respuesta perdida: se reintenta una vez
+      }
+    }
+    return null
+  }
 
   const handleOpcion = async (idx: number) => {
     if (yaRespondida || verificando) return
     setVerificando(true)
+    setErrorVerif(null)
     setSeleccionadas(prev => ({ ...prev, [currentIdx]: idx }))
     const preguntaIdx = currentIdx
-    try {
-      const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pregunta_id: preguntas[preguntaIdx].id, respuesta: idx }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setCorrecciones(prev => ({
-          ...prev,
-          [preguntaIdx]: {
-            es_correcta: data.es_correcta === true,
-            respuesta_correcta: data.respuesta_correcta,
-          },
-        }))
-      }
-    } catch {
-      // silencioso — no bloquear al alumno; sin corrección la opción queda neutral
-    } finally {
+    const resultado = await verificar(preguntas[preguntaIdx].id, idx)
+    if (resultado) {
+      setCorrecciones(prev => ({ ...prev, [preguntaIdx]: resultado }))
       setRespondidas(prev => ({ ...prev, [preguntaIdx]: true }))
-      setVerificando(false)
+    } else {
+      // Sin veredicto la opción vuelve a neutral y el alumno puede volver a tocarla.
+      setSeleccionadas(prev => {
+        const sinEsta = { ...prev }
+        delete sinEsta[preguntaIdx]
+        return sinEsta
+      })
+      setErrorVerif(loc(
+        'No pudimos revisar tu respuesta. Revisa tu conexión y vuelve a tocarla.',
+        "We couldn't check your answer. Check your connection and tap it again.",
+      ))
     }
+    setVerificando(false)
   }
 
   const handleNext = async () => {
@@ -250,7 +273,8 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
         <div className="space-y-2">
           {(pregunta.opciones as string[]).map((opcion, i) => {
             const esSeleccionada = seleccionada === i
-            const esCorrecta = correcciones[currentIdx]?.respuesta_correcta === i
+            // El color sale del veredicto del servidor, no de comparar índices.
+            const esCorrecta = correccion?.es_correcta === true
 
             let bg = 'rgba(255,255,255,0.03)'
             let borderColor = '#2A2F3E'
@@ -306,6 +330,10 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
             )
           })}
         </div>
+
+        {errorVerif && !yaRespondida && (
+          <p className="text-xs" style={{ color: '#FCD34D' }}>{errorVerif}</p>
+        )}
 
         {/* Retroalimentación inmediata (calificada server-side) */}
         {yaRespondida && (

@@ -25,6 +25,7 @@ interface Documento {
 }
 
 const TIPOS_PREPA: DocTipo[] = [
+  'acta_nacimiento',
   'curp',
   'certificado_secundaria',
   'identificacion_oficial',
@@ -32,6 +33,7 @@ const TIPOS_PREPA: DocTipo[] = [
 ]
 
 const TIPOS_SECUNDARIA: DocTipo[] = [
+  'acta_nacimiento',
   'curp',
   'certificado_primaria',
   'identificacion_oficial',
