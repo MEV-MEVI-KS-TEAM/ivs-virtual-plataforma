@@ -105,6 +105,9 @@ async function leerPrimerasRespuestas(
     .eq('alumno_id', alumnoId)
     .in('quiz_id', filas.map(f => f.id))
     .order('fecha', { ascending: true })
+    // Desempate determinista: dos filas con la misma `fecha` (envíos simultáneos
+    // antes del índice único) siempre resuelven a la misma «primera».
+    .order('id', { ascending: true })
   if (error) throw new Error(error.message)
   return primerasRespuestas(filas, (data ?? []) as { quiz_id: string; respuesta: unknown }[])
 }
@@ -247,6 +250,14 @@ export async function POST(
         console.error('[quiz POST] guardar', g.error)
         return NextResponse.json({ error: 'Error al guardar tu respuesta' }, { status: 500 })
       }
+      // Sin el índice único (antes de la migración) dos POST simultáneos con
+      // índices distintos pueden insertar los dos: se responde SIEMPRE con la
+      // primera guardada, para que la carrera no sirva de oráculo de la clave.
+      const ganadora = await leerPrimerasRespuestas(admin, alumnoId, [row])
+      const idxGanador = ganadora[row.id]
+      if (idxGanador !== undefined && idxGanador !== idx) {
+        return NextResponse.json({ ...veredictoQuiz(row, idxGanador), ya_respondida: true })
+      }
       return NextResponse.json(veredictoQuiz(row, idx))
     }
 
@@ -272,10 +283,14 @@ export async function POST(
       }
       const previas = await leerPrimerasRespuestas(admin, alumnoId, filas)
       const nuevas = validas.filter(v => previas[v.fila.id] === undefined)
-      const g = await guardarRespuestas(admin, alumnoId, nuevas)
-      if (g.error && g.error.code !== '23505') {
-        console.error('[quiz POST] guardar (compat)', g.error)
-        return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
+      // Una por una: con el índice único, un 23505 en una fila no debe tirar
+      // las demás (un INSERT de varias filas es todo o nada).
+      for (const n of nuevas) {
+        const g = await guardarRespuestas(admin, alumnoId, [n])
+        if (g.error && g.error.code !== '23505') {
+          console.error('[quiz POST] guardar (compat)', g.error)
+          return NextResponse.json({ error: 'Error al guardar respuestas' }, { status: 500 })
+        }
       }
       const finales = await leerPrimerasRespuestas(admin, alumnoId, filas)
       const correctas = filas.filter(f => finales[f.id] !== undefined && veredictoQuiz(f, finales[f.id]).es_correcta).length
