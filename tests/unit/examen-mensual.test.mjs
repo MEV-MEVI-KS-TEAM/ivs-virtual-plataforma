@@ -93,6 +93,8 @@ test('validarEnvio rechaza vacío, ids ajenos e índices inválidos', () => {
   assert.equal(validarEnvio(pregs, { 1: 9 }).ok, false)
   assert.equal(validarEnvio(pregs, { 2: 3 }).ok, false) // la 2 tiene 3 opciones
   assert.equal(validarEnvio(pregs, { 1: '0' }).ok, false)
+  // parcial (una de dos): rechazado — sin esto, 3 intentos dejaban sacar bits de la clave
+  assert.equal(validarEnvio(pregs, { 1: 0 }).ok, false)
   const ok = validarEnvio(pregs, { 1: 0, 2: 2 })
   assert.equal(ok.ok, true)
   assert.deepEqual(ok.respuestas, { 1: 0, 2: 2 })

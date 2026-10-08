@@ -155,8 +155,10 @@ export function validarEnvio(
     if (idx < 0) return { ok: false, error: 'Respuestas inválidas.' }
     limpias[id] = idx
   }
-  if (Object.keys(limpias).length === 0) {
-    return { ok: false, error: 'Contesta al menos una pregunta antes de enviar la evaluación.' }
+  // Se exigen TODAS: un envío parcial con 3 intentos deja sacar «bits» de la clave
+  // (contestar una sola y ver cuántas salieron bien). La página ya lo exigía.
+  if (Object.keys(limpias).length !== preguntas.length) {
+    return { ok: false, error: 'Contesta todas las preguntas antes de enviar la evaluación.' }
   }
   return { ok: true, respuestas: limpias }
 }
