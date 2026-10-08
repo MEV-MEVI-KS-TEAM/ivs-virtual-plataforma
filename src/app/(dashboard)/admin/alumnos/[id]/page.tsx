@@ -9,6 +9,7 @@ import { config } from '@/lib/config'
 interface AlumnoDetalle {
   id: string
   matricula: string
+  nivel?: string | null
   meses_desbloqueados: number
   inscripcion_pagada: boolean
   created_at: string
@@ -54,6 +55,28 @@ const DOC_LABELS: Record<DocTipo, string> = {
   certificado_secundaria: 'Certificado de Secundaria',
   identificacion_oficial: 'Identificación Oficial',
   foto_perfil_doc:        'Foto (fondo blanco)',
+}
+
+/**
+ * Documentos que se le piden a ESTE alumno — misma lista que ve él en
+ * /alumno/documentos (si cambia una, cambia la otra). Secundaria pide el
+ * certificado de PRIMARIA; prepa (y nivel vacío, igual que la pantalla del
+ * alumno) el de SECUNDARIA.
+ *
+ * Además se muestra cualquier documento YA SUBIDO de un tipo fuera de su
+ * nivel (p. ej. un alumno de secundaria que subió «Certificado de Secundaria»
+ * cuando la pantalla le pedía la lista de prepa), etiquetado, para que el
+ * admin no pierda de vista ni un archivo.
+ */
+const DOC_TIPOS_SECUNDARIA: DocTipo[] = [
+  'acta_nacimiento', 'curp', 'certificado_primaria', 'identificacion_oficial', 'foto_perfil_doc',
+]
+const DOC_TIPOS_PREPA: DocTipo[] = [
+  'acta_nacimiento', 'curp', 'certificado_secundaria', 'identificacion_oficial', 'foto_perfil_doc',
+]
+
+function docTiposDelNivel(nivel: string | null | undefined): DocTipo[] {
+  return nivel === 'secundaria' ? DOC_TIPOS_SECUNDARIA : DOC_TIPOS_PREPA
 }
 
 const CARD_STYLE = { background: '#181C26', border: '1px solid #2A2F3E' }
@@ -310,6 +333,13 @@ export default function AlumnoDetallePage() {
   )
 
   const todosBloqueados = alumno.meses_desbloqueados >= alumno.plan.duracion_meses
+
+  // Documentos de su nivel + los ya subidos que no le corresponden (etiquetados)
+  const docTiposNivel = docTiposDelNivel(alumno.nivel)
+  const docTiposVisibles: DocTipo[] = [
+    ...docTiposNivel,
+    ...DOC_TIPOS.filter(t => !docTiposNivel.includes(t) && documentos.some(d => d.tipo === t)),
+  ]
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -618,7 +648,7 @@ export default function AlumnoDetallePage() {
           <h3 className="text-sm font-semibold text-gray-100">Documentos del Alumno</h3>
         </div>
         <div className="divide-y" style={{ borderColor: '#2A2F3E' }}>
-          {DOC_TIPOS.map(tipo => {
+          {docTiposVisibles.map(tipo => {
             const doc = documentos.find(d => d.tipo === tipo)
             const edit = doc ? docEdits[doc.id] : null
             const isSaving = doc ? savingDoc === doc.id : false
@@ -627,7 +657,14 @@ export default function AlumnoDetallePage() {
               <div key={tipo} className="px-5 py-4 flex flex-col sm:flex-row sm:items-start gap-4">
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium" style={{ color: '#F1F5F9' }}>{DOC_LABELS[tipo]}</p>
+                  <p className="text-sm font-medium" style={{ color: '#F1F5F9' }}>
+                    {DOC_LABELS[tipo]}
+                    {!docTiposNivel.includes(tipo) && (
+                      <span className="ml-2 text-xs font-normal" style={{ color: '#F59E0B' }}>
+                        · no corresponde a su nivel
+                      </span>
+                    )}
+                  </p>
                   {doc ? (
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <span className="text-xs" style={{ color: '#64748B' }}>{doc.nombre_archivo}</span>
