@@ -51,6 +51,8 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
 
   const cardRef = useRef<HTMLDivElement>(null)
   const preguntaRef = useRef<HTMLDivElement>(null)
+  // Candado síncrono: dos toques en el mismo tick no alcanzan a ver `verificando`.
+  const verificacionEnVuelo = useRef(false)
 
   const loc = (es: string, en: string) => lang === 'en' ? en : es
 
@@ -111,52 +113,74 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
   const yaRespondida = respondidas[currentIdx] === true && correccion !== undefined
 
   // La verificación no persiste nada: reintentarla es seguro.
-  const verificar = async (preguntaId: string, idx: number): Promise<Correccion | null> => {
+  // 'red' = no llegó respuesta (se reintenta una vez); 'sesion' = 401 o HTML de /login;
+  // 'error' = otro 4xx (reintentar no cambia nada).
+  type Verificacion = { tipo: 'ok'; correccion: Correccion } | { tipo: 'red' | 'sesion' | 'error' }
+  const verificar = async (preguntaId: string, idx: number): Promise<Verificacion> => {
     for (let intento = 0; intento < 2; intento++) {
+      const control = new AbortController()
+      const corte = setTimeout(() => control.abort(), 10_000)
       try {
         const res = await fetch(`/api/alumno/quiz/${semanaId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pregunta_id: preguntaId, respuesta: idx }),
+          signal: control.signal,
         })
-        // Un redirect a /login (sesión vencida) llega como HTML con 200: no es veredicto.
         const ct = res.headers.get('content-type') ?? ''
-        if (res.ok && ct.includes('application/json')) {
+        // Un redirect a /login (sesión vencida) llega como HTML con 200: no es veredicto.
+        if (res.status === 401 || (res.ok && !ct.includes('application/json'))) return { tipo: 'sesion' }
+        if (res.ok) {
           const data = await res.json()
           if (typeof data?.es_correcta === 'boolean') {
-            return { es_correcta: data.es_correcta, respuesta_correcta: data.respuesta_correcta }
+            return { tipo: 'ok', correccion: { es_correcta: data.es_correcta, respuesta_correcta: data.respuesta_correcta } }
           }
+        } else if (res.status >= 400 && res.status < 500) {
+          return { tipo: 'error' }
         }
       } catch {
-        // red caída o respuesta perdida: se reintenta una vez
+        // red caída, respuesta perdida o más de 10 s sin respuesta: se reintenta una vez
+      } finally {
+        clearTimeout(corte)
       }
     }
-    return null
+    return { tipo: 'red' }
   }
 
   const handleOpcion = async (idx: number) => {
-    if (yaRespondida || verificando) return
+    if (yaRespondida || verificando || verificacionEnVuelo.current) return
+    verificacionEnVuelo.current = true
     setVerificando(true)
     setErrorVerif(null)
     setSeleccionadas(prev => ({ ...prev, [currentIdx]: idx }))
     const preguntaIdx = currentIdx
-    const resultado = await verificar(preguntas[preguntaIdx].id, idx)
-    if (resultado) {
-      setCorrecciones(prev => ({ ...prev, [preguntaIdx]: resultado }))
-      setRespondidas(prev => ({ ...prev, [preguntaIdx]: true }))
-    } else {
-      // Sin veredicto la opción vuelve a neutral y el alumno puede volver a tocarla.
-      setSeleccionadas(prev => {
-        const sinEsta = { ...prev }
-        delete sinEsta[preguntaIdx]
-        return sinEsta
-      })
-      setErrorVerif(loc(
-        'No pudimos revisar tu respuesta. Revisa tu conexión y vuelve a tocarla.',
-        "We couldn't check your answer. Check your connection and tap it again.",
-      ))
+    try {
+      const resultado = await verificar(preguntas[preguntaIdx].id, idx)
+      if (resultado.tipo === 'ok') {
+        setCorrecciones(prev => ({ ...prev, [preguntaIdx]: resultado.correccion }))
+        setRespondidas(prev => ({ ...prev, [preguntaIdx]: true }))
+      } else {
+        // Sin veredicto la opción vuelve a neutral y el alumno puede volver a tocarla.
+        setSeleccionadas(prev => {
+          const sinEsta = { ...prev }
+          delete sinEsta[preguntaIdx]
+          return sinEsta
+        })
+        setErrorVerif(
+          resultado.tipo === 'sesion'
+            ? loc('Tu sesión expiró. Vuelve a iniciar sesión para seguir con el quiz.',
+                'Your session expired. Sign in again to continue the quiz.')
+            : resultado.tipo === 'error'
+              ? loc('No pudimos revisar tu respuesta. Inténtalo de nuevo en un momento.',
+                  "We couldn't check your answer. Try again in a moment.")
+              : loc('No pudimos revisar tu respuesta. Revisa tu conexión y vuelve a tocarla.',
+                  "We couldn't check your answer. Check your connection and tap it again."),
+        )
+      }
+    } finally {
+      verificacionEnVuelo.current = false
+      setVerificando(false)
     }
-    setVerificando(false)
   }
 
   const handleNext = async () => {
@@ -270,7 +294,7 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
           {pregunta.pregunta}
         </p>
 
-        <div className="space-y-2">
+        <div className="space-y-2" aria-busy={verificando}>
           {(pregunta.opciones as string[]).map((opcion, i) => {
             const esSeleccionada = seleccionada === i
             // El color sale del veredicto del servidor, no de comparar índices.
@@ -332,7 +356,7 @@ export default function SemanaQuiz({ semanaId, lang }: SemanaQuizProps) {
         </div>
 
         {errorVerif && !yaRespondida && (
-          <p className="text-xs" style={{ color: '#FCD34D' }}>{errorVerif}</p>
+          <p role="alert" className="text-xs" style={{ color: '#FCD34D' }}>{errorVerif}</p>
         )}
 
         {/* Retroalimentación inmediata (calificada server-side) */}
