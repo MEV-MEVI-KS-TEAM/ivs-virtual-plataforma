@@ -81,7 +81,16 @@ export async function POST(request: NextRequest) {
     const { error: upsertError } = await admin
       .from('progreso_semanas')
       .upsert(
-        { alumno_id: alumno.id, semana_id },
+        // completada = true: el trigger trg_actualizar_racha (actualizar_racha)
+        // solo suma racha cuando NEW.completada pasa a true. Sin esto la fila
+        // nacía con el default false y la racha no se movía nunca (ya pasaba en
+        // main). ignoreDuplicates: una semana ya marcada no se reescribe.
+        {
+          alumno_id: alumno.id,
+          semana_id,
+          completada: true,
+          fecha_completada: new Date().toISOString(),
+        },
         { onConflict: 'alumno_id,semana_id', ignoreDuplicates: true }
       )
 
