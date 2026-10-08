@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyAdmin } from '@/lib/supabase/verify-admin'
 import {
   buildDocEstadoUpdates,
+  ordenDocEstadoUpdates,
   documentoStoragePath,
   mapDocumentoAlumnoRow,
   type DocEstadoAdmin,
@@ -101,21 +102,16 @@ export async function PATCH(
     }
 
     const admin = createAdminClient()
-    const { nuevo, legacy } = buildDocEstadoUpdates(estado, comentario ?? null)
-
-    let { error } = await admin
-      .from('documentos_alumno')
-      .update(nuevo)
-      .eq('id', documentoId)
-      .eq('alumno_id', params.id)
-
-    if (error) {
-      const second = await admin
+    // aprobado ⇒ verificado=true (ver buildDocEstadoUpdates): híbrido → nuevo → legacy
+    let error: { message: string } | null = null
+    for (const payload of ordenDocEstadoUpdates(buildDocEstadoUpdates(estado, comentario ?? null))) {
+      const r = await admin
         .from('documentos_alumno')
-        .update(legacy)
+        .update(payload)
         .eq('id', documentoId)
         .eq('alumno_id', params.id)
-      error = second.error
+      error = r.error
+      if (!error) break
     }
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })

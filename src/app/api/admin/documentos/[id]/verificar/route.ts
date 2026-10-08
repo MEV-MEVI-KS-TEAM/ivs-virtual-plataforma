@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyAdmin } from '@/lib/supabase/verify-admin'
-import { buildDocEstadoUpdates, type DocEstadoAdmin } from '@/lib/admin/documentos-admin'
+import { buildDocEstadoUpdates, ordenDocEstadoUpdates, type DocEstadoAdmin } from '@/lib/admin/documentos-admin'
 
 /**
  * PUT /api/admin/documentos/[id]/verificar
@@ -31,19 +31,15 @@ export async function PUT(
     }
 
     const admin = createAdminClient()
-    const { nuevo, legacy } = buildDocEstadoUpdates(estado, comentario ?? null)
-
-    let { error } = await admin
-      .from('documentos_alumno')
-      .update(nuevo)
-      .eq('id', params.id)
-
-    if (error) {
-      const second = await admin
+    // aprobado ⇒ verificado=true (ver buildDocEstadoUpdates): híbrido → nuevo → legacy
+    let error: { message: string } | null = null
+    for (const payload of ordenDocEstadoUpdates(buildDocEstadoUpdates(estado, comentario ?? null))) {
+      const r = await admin
         .from('documentos_alumno')
-        .update(legacy)
+        .update(payload)
         .eq('id', params.id)
-      error = second.error
+      error = r.error
+      if (!error) break
     }
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
